@@ -181,25 +181,25 @@ for m in MARKERS:
 " /path/to/classifier_raw/models /path/to/extracted/bundle
 ```
 
-Then paste the printed constants into `ModelBootstrap.java`, rebuild the jar,
-and publish both:
+Then paste the printed constants into `ModelBootstrap.java` and publish:
 
 ```bash
-gh release create models-v1 dist/models.zip \
-    --title "Model bundle v1" --notes "OPC + B3-Tub production checkpoints"
-
-gh release create v1.0.0 target/Neural_Image_Classifier-1.0.0.jar \
-    --title "v1.0.0" --notes-file docs/release-notes-1.0.0.md
+tools/publish-release.sh v1.0.0
 ```
 
-Two tags, not one, because the two artefacts change at different rates: a jar
-fix that does not touch the weights should not make every user re-download
-90 MB, and a retrained model should not require a new jar unless
-`BUNDLE_VERSION` changes.
+That script reads `BUNDLE_VERSION` and `BUNDLE_SHA256` back out of the Java
+source rather than taking them as arguments, so it cannot publish a bundle under
+a version the jar does not request, or a zip whose hash the jar will reject. It
+then **publishes the model bundle first, proves the asset is actually
+downloadable, and only then builds and publishes the jar** — because the jar
+hardcodes that URL, so a jar released ahead of its bundle hands every installer
+an HTTP 404 on first run. Re-running it leaves an already-published bundle
+alone.
 
-**The model release must be published before the jar that points at it.** The
-jar's download will 404 otherwise, which is exactly the failure a biologist
-cannot diagnose.
+Two tags, not one, because the artefacts change at different rates: a jar fix
+that does not touch the weights should not make every user re-download 90 MB,
+and a retrained model should not require a new jar unless `BUNDLE_VERSION`
+changes.
 
 ### Changing which checkpoints ship
 
