@@ -23,7 +23,7 @@ Nothing else to install, no files to copy by hand, no admin rights.
 
 - **Fiji** from <https://fiji.sc>, recent enough to bundle **Java 21 or newer**
   (check `Help > About ImageJ...`). Current downloads do; only a long-unused
-  `Fiji.app` still on Java 8 would not — see [Troubleshooting](#5-troubleshooting).
+  `Fiji.app` still on Java 8 would not — see [Troubleshooting](#4-troubleshooting).
 - **Internet access on first run only** (1–2 GB, once per machine — see
   [What the first run downloads](#2-what-the-first-run-downloads)).
 - **Roughly 5 GB of free disk** for the cached Python environment and models.
@@ -172,37 +172,7 @@ ids restart per image.
 
 ---
 
-## 4. Where the numbers come from
-
-The thresholds and parameters are frozen, not tuned per run: **OPC 0.45**,
-**B3-Tub 0.4825**, CellPose **cellprob 0.1 / flow 0.2**, and the
-**neighbour-excluded RFP rule at radius 60 px, gate 16.5**. They are the values
-the published analysis uses, and the shipped checkpoints are the ones those
-thresholds were selected for — `thresholds.json` travels inside the model bundle
-with the weights so the two cannot drift apart.
-
-The classifiers are ResNet-18, trained per marker on native-resolution
-single-cell crops (200 px, soft-masked to the nucleus with a per-marker sigma).
-Each was trained on a class-balanced set of biologist-labelled cells with a
-single held-out validation split:
-
-| Marker | Train / validation cells | Best validation accuracy |
-| --- | --- | --- |
-| OPC | 219 / 39 | 97.4% |
-| B3-Tub | 224 / 40 | 92.5% |
-
-**Read those accuracies with their sample sizes in mind** — 39 and 40 cells is a
-small validation set, so the true error bars are wide, and the figures describe
-the cells the models were trained and validated on rather than a guarantee for a
-new experiment. Spot-check a new dataset (`Show one example cell per UpSet case`
-is the quickest way) before trusting counts from it.
-
-The Python pipeline in [`python/`](python/) is the same code the analysis ran,
-vendored unchanged — see [`docs/DEVELOPING.md`](docs/DEVELOPING.md).
-
----
-
-## 5. Troubleshooting
+## 4. Troubleshooting
 
 - **First run takes a long time / looks stuck** — expected; it is building the
   Python environment. Watch the progress window's status text. If it genuinely
