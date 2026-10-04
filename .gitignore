@@ -1,0 +1,27 @@
+# -- build output -----------------------------------------------------------
+target/
+dist/
+
+# The model bundle is a release asset, never a committed file: it is ~90 MB,
+# above GitHub's 50 MB per-file warning, and it changes on a different schedule
+# from the code. tools/prepare_model_bundle.py rebuilds it from the checkpoints.
+*.zip
+models.zip
+
+# -- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# -- editors / OS -----------------------------------------------------------
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

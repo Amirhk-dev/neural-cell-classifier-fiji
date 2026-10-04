@@ -1,0 +1,26 @@
+# The Python side of the plugin, built once per machine by Appose (see
+# NeuralClassifyPlugin.getPythonService) into its own isolated conda
+# environment. Nothing here touches the user's own Python installs.
+#
+# This file is a jar resource, not a file on disk: changing it and rebuilding
+# the jar is what changes the environment a fresh install gets.
+name: neural-cell-classifier
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    # Pinned to match `appose.version` in pom.xml -- the wire protocol between
+    # this Python worker and the Java plugin isn't guaranteed stable across
+    # appose versions, so both sides must agree.
+    - appose==0.10.0
+    # The pipeline itself, from this plugin's own public repository: the
+    # inference-only `neural_imgs` package under python/, which pulls in torch,
+    # torchvision, cellpose, BaSiCPy, czifile and pandas as declared in
+    # python/pyproject.toml.
+    #
+    # Tracks `main` so a published fix reaches installs without a new jar. To
+    # freeze an install against pipeline changes, replace `@main` with a release
+    # tag (e.g. `@v1.0.0`) and rebuild the jar.
+    - "git+https://github.com/Amirhk-dev/neural-cell-classifier-fiji.git@main#subdirectory=python"

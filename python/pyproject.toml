@@ -1,0 +1,54 @@
+# Inference-only distribution of the neural-image-processor pipeline that the
+# Fiji plugin drives. Installed by the plugin into its own Appose-managed conda
+# environment -- see ../src/main/resources/scripts/environment.yml, which pip
+# -installs this subdirectory straight from the public GitHub repo.
+#
+# The import package stays `neural_imgs` and its modules are byte-identical to
+# the private research repo. That is deliberate: the preprocessing applied at
+# inference has to be exactly the preprocessing the shipped checkpoints were
+# trained under, and identical files are the only way to keep that claim cheap
+# to verify (`diff -r`) instead of a thing to re-argue after every edit.
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neural-cell-classifier"
+version = "1.0.0"
+description = "Single-cell OPC / B3-Tub / RFP classification pipeline (inference only)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Amirhossein Kardoost" }]
+keywords = ["microscopy", "single-cell", "cellpose", "fiji", "imagej", "czi"]
+
+# Pins mirror the research environment the checkpoints were trained and
+# validated in. numpy is held below 2.0 because czifile and the pinned
+# scikit-image/scipy builds are compiled against the 1.x ABI.
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "scipy>=1.11,<1.14",
+    "scikit-image>=0.22,<0.25",
+    "tifffile>=2023.7.10",
+    "czifile",
+    "torch>=2.5,<3.0",
+    "torchvision>=0.20,<1.0",
+    "cellpose>=4.0,<5.0",
+    "BaSiCPy>=2.0,<3.0",
+    "pandas>=1.5,<3.0",
+    "matplotlib>=3.7,<4.0",
+    "upsetplot>=0.9,<1.0",
+    "PyYAML>=6.0,<7.0",
+    "tqdm",
+]
+
+[project.urls]
+Homepage = "https://github.com/Amirhk-dev/neural-cell-classifier-fiji"
+Issues = "https://github.com/Amirhk-dev/neural-cell-classifier-fiji/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

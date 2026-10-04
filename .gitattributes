@@ -1,0 +1,10 @@
+# Keep the Appose worker scripts and the env spec LF-only: they are read out of
+# the jar by a Python interpreter, and a CRLF checkout on a Windows dev machine
+# would ship a jar whose environment.yml and workers have stray carriage
+# returns.
+*.py text eol=lf
+*.yml text eol=lf
+*.java text eol=lf
+*.xml text eol=lf
+*.md text eol=lf
+plugins.config text eol=lf

@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<parent>
+		<groupId>org.scijava</groupId>
+		<artifactId>pom-scijava</artifactId>
+		<version>43.0.0</version>
+		<relativePath />
+	</parent>
+
+	<groupId>com.neuralimgs</groupId>
+	<artifactId>Neural_Image_Classifier</artifactId>
+	<version>1.0.0</version>
+
+	<name>neural-cell-classifier-fiji</name>
+	<description>
+		Fiji plugin for single-cell OPC / B3-Tub / RFP classification of Zeiss
+		CZI images. One jar: it builds its own Python environment and downloads
+		the trained classifiers on first run, then delegates the heavy lifting
+		(BaSiC illumination correction, CellPose nucleus detection, PyTorch
+		ResNet-18 classifiers) to the bundled neural_imgs package via Appose.
+	</description>
+	<url>https://github.com/Amirhk-dev/neural-cell-classifier-fiji</url>
+	<inceptionYear>2026</inceptionYear>
+
+	<licenses>
+		<license>
+			<name>MIT License</name>
+			<url>https://opensource.org/licenses/MIT</url>
+			<distribution>repo</distribution>
+		</license>
+	</licenses>
+
+	<scm>
+		<connection>scm:git:https://github.com/Amirhk-dev/neural-cell-classifier-fiji</connection>
+		<developerConnection>scm:git:git@github.com:Amirhk-dev/neural-cell-classifier-fiji.git</developerConnection>
+		<tag>HEAD</tag>
+		<url>https://github.com/Amirhk-dev/neural-cell-classifier-fiji</url>
+	</scm>
+	<issueManagement>
+		<system>GitHub Issues</system>
+		<url>https://github.com/Amirhk-dev/neural-cell-classifier-fiji/issues</url>
+	</issueManagement>
+	<ciManagement>
+		<system>None</system>
+	</ciManagement>
+
+	<organization>
+		<name>neural-cell-classifier-fiji</name>
+		<url>https://github.com/Amirhk-dev/neural-cell-classifier-fiji</url>
+	</organization>
+
+	<developers>
+		<developer>
+			<id>Amirhk-dev</id>
+			<name>Amirhossein Kardoost</name>
+			<url>https://github.com/Amirhk-dev</url>
+			<roles>
+				<role>founder</role>
+				<role>lead</role>
+				<role>developer</role>
+				<role>maintainer</role>
+			</roles>
+		</developer>
+	</developers>
+	<contributors>
+		<contributor>
+			<name>None</name>
+		</contributor>
+	</contributors>
+
+	<mailingLists>
+		<mailingList>
+			<name>Image.sc Forum</name>
+			<archive>https://forum.image.sc/</archive>
+		</mailingList>
+	</mailingLists>
+
+	<properties>
+		<package-name>com.neuralimgs.fiji</package-name>
+		<main-class>com.neuralimgs.fiji.NeuralClassifyPlugin</main-class>
+		<license.licenseName>mit</license.licenseName>
+		<license.copyrightOwners>Amirhossein Kardoost</license.copyrightOwners>
+
+		<!-- Appose requires Java 21. -->
+		<scijava.jvm.version>21</scijava.jvm.version>
+		<scijava.jvm.build.version>[21,)</scijava.jvm.build.version>
+
+		<appose.version>0.10.0</appose.version>
+	</properties>
+
+	<dependencies>
+		<!-- ImageJ 1.x: already on the classpath inside any Fiji install, so this
+		     is `provided` and must NOT be bundled into the plugin jar. -->
+		<dependency>
+			<groupId>net.imagej</groupId>
+			<artifactId>ij</artifactId>
+			<scope>provided</scope>
+		</dependency>
+
+		<!-- Appose: bridges this Java plugin to the Python pipeline in python/.
+		     Pulls in groovy/ivy/jna/commons-* that a stock Fiji does NOT ship,
+		     so they're shaded into the plugin jar below (see build/plugins):
+		     a user installs a single self-contained jar, no separate jars/ copy. -->
+		<dependency>
+			<groupId>org.apposed</groupId>
+			<artifactId>appose</artifactId>
+			<version>${appose.version}</version>
+		</dependency>
+	</dependencies>
+
+	<repositories>
+		<repository>
+			<id>scijava.public</id>
+			<url>https://maven.scijava.org/content/groups/public</url>
+		</repository>
+	</repositories>
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-shade-plugin</artifactId>
+				<executions>
+					<execution>
+						<phase>package</phase>
+						<goals>
+							<goal>shade</goal>
+						</goals>
+						<configuration>
+							<shadedArtifactAttached>false</shadedArtifactAttached>
+							<createDependencyReducedPom>false</createDependencyReducedPom>
+							<filters>
+								<filter>
+									<artifact>*:*</artifact>
+									<excludes>
+										<exclude>META-INF/*.SF</exclude>
+										<exclude>META-INF/*.DSA</exclude>
+										<exclude>META-INF/*.RSA</exclude>
+									</excludes>
+								</filter>
+							</filters>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+		</plugins>
+	</build>
+</project>
