@@ -442,8 +442,9 @@ the download.
 
 ## For developers
 
-Building the jar, the repository layout, and how the model bundle is published:
-[`docs/DEVELOPING.md`](docs/DEVELOPING.md).
+Building the jar and the repository layout:
+[`docs/DEVELOPING.md`](docs/DEVELOPING.md). Cutting a release:
+[`docs/PUBLISHING.md`](docs/PUBLISHING.md).
 
 ## Licence and contact
 

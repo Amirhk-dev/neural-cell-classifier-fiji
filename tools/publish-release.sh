@@ -8,6 +8,11 @@
 # script refuses to publish the jar until the bundle it names is actually
 # downloadable.
 #
+# OPTIONAL CONVENIENCE. This is the `gh` route; `gh` is not installed on the HPC
+# node, and docs/PUBLISHING.md documents the browser route that needs no CLI
+# tooling at all. Both enforce the same ordering -- this one just does it
+# unattended.
+#
 # Run from the repository root, on a machine with `gh` authenticated and a JDK
 # 21+ on PATH. Safe to re-run: an already-published model bundle is left alone.
 #
@@ -20,6 +25,12 @@ if [[ -z "$TAG" ]]; then
 	echo "usage: tools/publish-release.sh <jar-tag>   e.g. v1.0.0" >&2
 	exit 64
 fi
+
+command -v gh >/dev/null || {
+	echo "gh is not installed. Either install it (https://cli.github.com) or" >&2
+	echo "follow docs/PUBLISHING.md, which publishes from the browser instead." >&2
+	exit 1
+}
 
 cd "$(dirname "$0")/.."
 REPO="Amirhk-dev/neural-cell-classifier-fiji"

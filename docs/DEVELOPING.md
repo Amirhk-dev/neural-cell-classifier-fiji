@@ -19,8 +19,12 @@
 │   └── src/neural_imgs/...
 ├── tools/
 │   ├── prepare_model_bundle.py          builds the models.zip release asset
+│   ├── check-model-asset.sh             verifies a published bundle (curl only)
+│   ├── publish-release.sh               one-shot release, needs `gh`
 │   └── manual-test/                     drives the model download over localhost
-└── docs/DEVELOPING.md
+└── docs/
+    ├── DEVELOPING.md
+    └── PUBLISHING.md                    how to cut a release (browser route)
 ```
 
 Two artefacts ship, and they ship separately:
@@ -181,20 +185,24 @@ for m in MARKERS:
 " /path/to/classifier_raw/models /path/to/extracted/bundle
 ```
 
-Then paste the printed constants into `ModelBootstrap.java` and publish:
+Then paste the printed constants into `ModelBootstrap.java`, rebuild the jar,
+and follow **[`PUBLISHING.md`](PUBLISHING.md)** — the browser route, which needs
+no CLI tooling or access token.
 
-```bash
-tools/publish-release.sh v1.0.0
-```
+Whichever route you take, the invariant is the same: the jar hardcodes the
+bundle's URL and SHA-256, so **the model release must be published and public
+before the jar that points at it**, or every first run dies on `HTTP 404`.
+`tools/check-model-asset.sh` proves that with nothing but `curl` — it fetches
+the asset the way a biologist's Fiji will (anonymously, through GitHub's
+redirect) and checks it against the constants compiled into the jar.
 
-That script reads `BUNDLE_VERSION` and `BUNDLE_SHA256` back out of the Java
-source rather than taking them as arguments, so it cannot publish a bundle under
-a version the jar does not request, or a zip whose hash the jar will reject. It
-then **publishes the model bundle first, proves the asset is actually
-downloadable, and only then builds and publishes the jar** — because the jar
-hardcodes that URL, so a jar released ahead of its bundle hands every installer
-an HTTP 404 on first run. Re-running it leaves an already-published bundle
-alone.
+If you have [`gh`](https://cli.github.com) installed,
+`tools/publish-release.sh v1.0.0` does all of it in one shot: it reads
+`BUNDLE_VERSION` and `BUNDLE_SHA256` back out of the Java source rather than
+taking them as arguments, so it cannot publish a bundle under a version the jar
+does not request or a zip whose hash the jar will reject, and it refuses to
+publish the jar until the bundle is downloadable. `gh` is not installed on the
+HPC node, so this is the optional path, not the default one.
 
 Two tags, not one, because the artefacts change at different rates: a jar fix
 that does not touch the weights should not make every user re-download 90 MB,
