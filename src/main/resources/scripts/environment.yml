@@ -4,6 +4,12 @@
 #
 # This file is a jar resource, not a file on disk: changing it and rebuilding
 # the jar is what changes the environment a fresh install gets.
+#
+# NeuralClassifyPlugin.getPythonService passes .scheme("environment.yml")
+# explicitly and must keep doing so. Appose infers a scheme from the FIRST
+# characters of the content, so the comment block you are reading is enough to
+# make inference fail outright -- do not drop that call on the assumption that
+# a file named like this one is recognised by its contents.
 name: neural-cell-classifier
 channels:
   - conda-forge

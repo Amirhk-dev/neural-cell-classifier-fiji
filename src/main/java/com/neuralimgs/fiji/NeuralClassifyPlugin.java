@@ -97,7 +97,7 @@ public class NeuralClassifyPlugin implements PlugIn {
 	 * running the new jar" are different claims. Without a visible stamp there
 	 * is no way to tell a bug from a stale class.
 	 */
-	static final String BUILD_ID = "1.1.0";
+	static final String BUILD_ID = "1.1.1";
 
 	private static final int DEFAULT_PATCH_GRID = 4;
 
@@ -1179,6 +1179,15 @@ public class NeuralClassifyPlugin implements PlugIn {
 			final String envSpec = readResource("/scripts/environment.yml");
 			environment = Appose.mamba()
 				.content(envSpec)
+				// Named, never inferred. Appose picks a scheme by sniffing the
+				// START of the content -- EnvironmentYmlScheme.supportsContent
+				// asks whether it begins with "name:"/"channels:"/"dependencies:"
+				// -- and environment.yml opens with a comment block explaining
+				// what it is. Every scheme then declines and build() dies with
+				// "Cannot infer scheme from content", before any environment is
+				// created. We know what this file is, so say so rather than
+				// making a documentation comment load-bearing.
+				.scheme("environment.yml")
 				.subscribeProgress(this::showProgress)
 				.subscribeOutput(IJ::log)
 				.subscribeError(IJ::log)
