@@ -97,9 +97,39 @@ public class NeuralClassifyPlugin implements PlugIn {
 	 * running the new jar" are different claims. Without a visible stamp there
 	 * is no way to tell a bug from a stale class.
 	 */
-	static final String BUILD_ID = "1.0.0";
+	static final String BUILD_ID = "1.1.0";
 
 	private static final int DEFAULT_PATCH_GRID = 4;
+
+	/** Channel roles, in dialog order. Must match the role names
+	 *  {@code neural_imgs.channels} accepts: this side only ever sends the
+	 *  canonical spellings, which is why the alias table that module keeps for
+	 *  hand-written layouts has no second copy here to drift from. */
+	private static final String ROLE_DAPI = "DAPI", ROLE_OPC = "OPC",
+		ROLE_RFP = "RFP", ROLE_B3TUB = "B3Tub", ROLE_BF = "BF";
+	private static final String[] CHANNEL_ROLES =
+		{ ROLE_DAPI, ROLE_OPC, ROLE_RFP, ROLE_B3TUB, ROLE_BF };
+	private static final String[] CHANNEL_CAPTIONS = {
+		"DAPI / nuclei channel:", "OPC channel:", "RFP channel:",
+		"B3-Tub channel:", "Brightfield channel:",
+	};
+
+	/** Marker roles a cell is called positive in, i.e. the ones whose absence
+	 *  removes columns from the results table. A subset of CHANNEL_ROLES. */
+	private static final String[] MARKER_ROLES = { ROLE_OPC, ROLE_B3TUB, ROLE_RFP };
+
+	/** Default channel numbers, 1-based, in CHANNEL_ROLES order -- the fixed
+	 *  acquisition every previous build assumed. */
+	private static final int[] DEFAULT_CHANNELS = { 1, 2, 3, 4, 5 };
+
+	/** What a channel field is set to when the image does not have that channel.
+	 *  Only the markers may be absent; DAPI cannot (see validate). */
+	private static final int CHANNEL_ABSENT = 0;
+
+	/** Upper bound on a channel number, so a typo cannot ask for channel 900 and
+	 *  be reported as "the image has only 5" minutes later. Well above any
+	 *  plausible widefield acquisition. */
+	private static final int MAX_CHANNEL = 32;
 
 	/** Input modes, in dialog order. */
 	private static final String[] INPUT_MODES = { "Single image", "Folder of images" };
@@ -142,9 +172,14 @@ public class NeuralClassifyPlugin implements PlugIn {
 	 *  The single-image and folder hints are greyed out together with their
 	 *  field when the other input mode is selected (see setInputRowEnabled). */
 	private static final String HINT_IMAGE =
-		"Expects one Zeiss .czi image (5 channels, in order DAPI, OPC, RFP, B3Tub, BF).";
+		"Expects one Zeiss .czi image; say which channel is which in Channels below.";
 	private static final String HINT_FOLDER =
 		"Expects a folder containing .czi images; every .czi directly inside it is run.";
+	private static final String HINT_CHANNELS =
+		"Channel numbers as they appear in the image, counting from 1. "
+		+ "0 = that channel is not in this image: the run still goes ahead and "
+		+ "reports the marker as not measured. DAPI is required -- nuclei are "
+		+ "detected on it. Channels above the highest number used are ignored.";
 	private static final String HINT_MODEL_DIR =
 		"Downloaded automatically on first run; change only to use your own checkpoints.";
 	private static final String HINT_OUT_DIR =
@@ -177,14 +212,18 @@ public class NeuralClassifyPlugin implements PlugIn {
 		+ "<p>The CZI is read and tiled into <b>Patch grid</b> &times; <b>Patch "
 		+ "grid</b> patches, illumination-corrected (BaSiC), nuclei are detected "
 		+ "on DAPI with CellPose, and every detected cell is classified by the two "
-		+ "trained ResNet-18 models (OPC, B3-Tub) plus the RFP intensity rule. "
+		+ "trained ResNet-18 models (OPC, B3-Tub) plus the RFP intensity rule -- "
+		+ "or by whichever of those three your image has a channel for, see "
+		+ "<b>Channels</b> below. "
 		+ "Results arrive as the <i>Neural Classifier Results</i> table, a CSV, an "
 		+ "UpSet plot, and optionally ROIs and per-case example cells.</p>"
 		+ "<p>The dialog reopens after each run with every field as you left it, so "
 		+ "the next image is one field-change away. <b>Cancel</b> finishes.</p>"
 		+ "<p>The dialog's top group -- input, model directory, output directory -- "
 		+ "is everything a run <b>requires</b>. Every group below it is tuning, and "
-		+ "its defaults are the ones the notebook uses.</p>"
+		+ "its defaults are the ones the notebook uses. The one group worth "
+		+ "checking on a new dataset is <b>Channels</b>, which says which channel "
+		+ "of your images carries which marker.</p>"
 
 		+ "<hr>"
 		+ "<h2>First run: two one-time downloads</h2>"
@@ -211,6 +250,45 @@ public class NeuralClassifyPlugin implements PlugIn {
 		+ "after the image, holding its results table, quantification, figures and "
 		+ "saved results. One image failing does not abort a folder run -- the "
 		+ "failure is reported in the Log and the rest continue.</p>"
+
+		+ "<hr>"
+		+ "<h2>Channels -- which channel carries which marker</h2>"
+		+ "<p>Five fields, one per marker, each holding that marker's "
+		+ "<b>channel number in your image, counting from 1</b>. The defaults -- "
+		+ "DAPI&nbsp;1, OPC&nbsp;2, RFP&nbsp;3, B3-Tub&nbsp;4, Brightfield&nbsp;5 "
+		+ "-- are the acquisition the models were trained on, so an image in that "
+		+ "order needs nothing changed here.</p>"
+		+ "<h3>A channel your images do not have: set it to 0</h3>"
+		+ "<p><b>0 means \"not in this image\", and the run still goes ahead.</b> "
+		+ "Everything that does not need that channel is done exactly as before: "
+		+ "nuclei are detected, cells are extracted, and the remaining markers are "
+		+ "classified and counted. The missing marker is reported as <i>not "
+		+ "measured</i> -- it gets no column in the results table, no set in the "
+		+ "UpSet plot, and any ratio that needs it is left out rather than printed "
+		+ "as 0%. That distinction is the point: <i>\"there was no OPC channel\" "
+		+ "and \"no cell was OPC+\" are different findings.</i></p>"
+		+ "<p>So an image with DAPI, RFP and B3-Tub but no OPC is "
+		+ "<b>DAPI&nbsp;1, OPC&nbsp;0, RFP&nbsp;2, B3-Tub&nbsp;3, "
+		+ "Brightfield&nbsp;0</b>, and it runs.</p>"
+		+ "<h3>DAPI is the one that cannot be 0</h3>"
+		+ "<p>Nuclei are detected on DAPI with CellPose, and every single cell in "
+		+ "the run comes from that detection -- its mask, its crop, its bounding "
+		+ "box. Without it there is nothing to classify.</p>"
+		+ "<h3>Any order; extra channels ignored</h3>"
+		+ "<p>The numbers need not be in order and need not be contiguous: DAPI "
+		+ "can be channel 3. Channels above the highest number you use are read "
+		+ "and then ignored, so you only have to describe the ones you care "
+		+ "about. An image with <i>fewer</i> channels than you assign is a real "
+		+ "mismatch and is reported per image, naming both counts, before that "
+		+ "image's slow work starts.</p>"
+		+ "<p style='color:#555'>Changing any of these invalidates saved results "
+		+ "for that image -- different channels mean different pixels and a "
+		+ "different set of markers -- so the next run re-classifies it.</p>"
+		+ "<p style='color:#a00'><b>A marker whose channel you set to 0 is not "
+		+ "its classifier being switched off.</b> The channel is simply not "
+		+ "there to score. If a channel <i>is</i> present but your model "
+		+ "directory ships no checkpoint for it, that marker is also reported as "
+		+ "not measured -- the Log says which.</p>"
 
 		+ "<hr>"
 		+ "<h2>Tiling and nucleus detection</h2>"
@@ -273,9 +351,9 @@ public class NeuralClassifyPlugin implements PlugIn {
 		+ "<h2>Saved results</h2>"
 		+ "<p><b>Load saved results if available</b> re-reads an image's previous "
 		+ "results instead of classifying it again, and only when the image, patch "
-		+ "grid, model directory, CellPose thresholds and RFP settings all match "
-		+ "what was saved -- so a re-run over a mostly-done folder costs seconds. "
-		+ "A cache hit never even reads the CZI.</p>"
+		+ "grid, channel assignment, model directory, CellPose thresholds and RFP "
+		+ "settings all match what was saved -- so a re-run over a mostly-done "
+		+ "folder costs seconds. A cache hit never even reads the CZI.</p>"
 
 		+ "<hr>"
 		+ "<h2>Contact</h2>"
@@ -349,6 +427,12 @@ public class NeuralClassifyPlugin implements PlugIn {
 		final boolean folderMode;
 		final String imagePath;
 		final String inputDir;
+		/** 1-based channel number per {@link #CHANNEL_ROLES} entry, or
+		 *  {@link #CHANNEL_ABSENT} for a channel this image does not have.
+		 *  Turned into the {@code channel_order} string Python parses by
+		 *  {@link #channelOrder}; kept as numbers here because that is what the
+		 *  dialog collects and what can be validated without a parser. */
+		final int[] channels;
 		final int patchGrid;
 		final double cellprobThreshold;
 		final double flowThreshold;
@@ -367,6 +451,7 @@ public class NeuralClassifyPlugin implements PlugIn {
 
 		ClassifyRequest(
 			final boolean folderMode, final String imagePath, final String inputDir,
+			final int[] channels,
 			final int patchGrid, final double cellprobThreshold, final double flowThreshold,
 			final String rfpMethod, final double rfpNeighbourThreshold,
 			final double rfpLegacyThreshold, final int rfpExcludeRadius,
@@ -378,6 +463,7 @@ public class NeuralClassifyPlugin implements PlugIn {
 			this.folderMode = folderMode;
 			this.imagePath = imagePath;
 			this.inputDir = inputDir;
+			this.channels = channels.clone();
 			this.patchGrid = patchGrid;
 			this.cellprobThreshold = cellprobThreshold;
 			this.flowThreshold = flowThreshold;
@@ -398,6 +484,62 @@ public class NeuralClassifyPlugin implements PlugIn {
 		/** What the run is over, for logs and error messages. */
 		String describeInput() {
 			return folderMode ? ("folder " + inputDir) : imagePath;
+		}
+
+		/** The channel number given for {@code role}, or {@link #CHANNEL_ABSENT}. */
+		int channelOf(final String role) {
+			for (int i = 0; i < CHANNEL_ROLES.length; i++) {
+				if (CHANNEL_ROLES[i].equals(role)) return channels[i];
+			}
+			return CHANNEL_ABSENT;
+		}
+
+		boolean measures(final String role) {
+			return channelOf(role) != CHANNEL_ABSENT;
+		}
+
+		/**
+		 * The channel assignment as the {@code channel_order} string Python parses:
+		 * one role per image channel, in file order, {@code "-"} for a channel this
+		 * run does not use -- e.g. {@code "DAPI,-,RFP,B3Tub"}.
+		 *
+		 * Only as long as the highest channel actually assigned. Channels past
+		 * that are not listed at all, which Python reads as "present in the file
+		 * and ignored" -- so a 5-channel image whose last two channels are unused
+		 * needs no declaration about them, and the same assignment also fits a
+		 * 3-channel one.
+		 */
+		String channelOrder() {
+			int highest = 0;
+			for (final int channel : channels) highest = Math.max(highest, channel);
+			final String[] roles = new String[highest];
+			for (int i = 0; i < highest; i++) roles[i] = "-";
+			for (int i = 0; i < CHANNEL_ROLES.length; i++) {
+				if (channels[i] != CHANNEL_ABSENT) roles[channels[i] - 1] = CHANNEL_ROLES[i];
+			}
+			return String.join(",", roles);
+		}
+
+		/** Marker roles this run measures, for the results table and the Log. */
+		List<String> markers() {
+			final List<String> out = new ArrayList<>();
+			for (final String role : MARKER_ROLES) {
+				if (measures(role)) out.add(role);
+			}
+			return out;
+		}
+
+		/** One line for the Log: the assignment, and what it leaves unmeasured. */
+		String describeChannels() {
+			final StringBuilder sb = new StringBuilder("channels " + channelOrder());
+			final List<String> missing = new ArrayList<>();
+			for (final String role : MARKER_ROLES) {
+				if (!measures(role)) missing.add(role);
+			}
+			if (!missing.isEmpty()) {
+				sb.append(", not measured: ").append(String.join(", ", missing));
+			}
+			return sb.toString();
 		}
 	}
 
@@ -501,6 +643,17 @@ public class NeuralClassifyPlugin implements PlugIn {
 			previous == null ? System.getProperty("user.home") : previous.outDir);
 		addHint(gd, HINT_OUT_DIR);
 
+		// Immediately after the required block, because it is the one thing a
+		// new dataset is most likely to need changed -- and getting it wrong
+		// means scoring the wrong pixels rather than failing, so it should not
+		// be buried among the tuning sections.
+		addSection(gd, "Channels -- which channel carries which marker");
+		for (int i = 0; i < CHANNEL_ROLES.length; i++) {
+			gd.addNumericField(CHANNEL_CAPTIONS[i],
+				previous == null ? DEFAULT_CHANNELS[i] : previous.channels[i], 0);
+		}
+		addHint(gd, HINT_CHANNELS);
+
 		addSection(gd, "Tiling and nucleus detection");
 		// Patch grid is a tile count -> 0 decimals; the two thresholds are
 		// genuinely continuous, so they get decimal places. The digit count only
@@ -557,6 +710,13 @@ public class NeuralClassifyPlugin implements PlugIn {
 		final String inputDir = gd.getNextString();
 		final String modelDir = gd.getNextString();
 		final String outDir = gd.getNextString();
+		// The channel fields are read here because they were *added* here --
+		// getNext* is positional per field type, so this block must stay in step
+		// with the dialog above it.
+		final double[] channelEntries = new double[CHANNEL_ROLES.length];
+		for (int i = 0; i < channelEntries.length; i++) {
+			channelEntries[i] = gd.getNextNumber();
+		}
 		// Read as a double, not (int): the cast alone would silently turn a
 		// typed "4.7" into 4 rather than telling the user it was ignored.
 		final double patchGridEntry = gd.getNextNumber();
@@ -575,8 +735,18 @@ public class NeuralClassifyPlugin implements PlugIn {
 
 		// Out-of-range numbers are carried through to validate() rather than
 		// rejected here, so a re-prompt can show them back with the complaint.
+		// A fractional or NaN channel entry becomes an out-of-range int, which
+		// validate() then names -- rather than being silently truncated to a
+		// channel the user did not ask for.
+		final int[] channels = new int[channelEntries.length];
+		for (int i = 0; i < channels.length; i++) {
+			channels[i] = Double.isNaN(channelEntries[i]) ? -1
+				: (channelEntries[i] != Math.rint(channelEntries[i]) ? -1
+					: (int) channelEntries[i]);
+		}
+
 		return new ClassifyRequest(
-			folderMode, imagePath, inputDir, (int) patchGridEntry,
+			folderMode, imagePath, inputDir, channels, (int) patchGridEntry,
 			cellprobThreshold, flowThreshold,
 			rfpMethod, rfpNeighbourThreshold, rfpLegacyThreshold,
 			(int) rfpExcludeRadiusEntry, (int) prefetchEntry, (int) workersEntry,
@@ -704,6 +874,8 @@ public class NeuralClassifyPlugin implements PlugIn {
 		if (request.outDir == null || request.outDir.isBlank()) {
 			return "No output directory selected.";
 		}
+		final String channelProblem = validateChannels(request);
+		if (channelProblem != null) return channelProblem;
 		if (request.rfpNeighbourThreshold < 0 || Double.isNaN(request.rfpNeighbourThreshold)
 			|| request.rfpLegacyThreshold < 0 || Double.isNaN(request.rfpLegacyThreshold))
 		{
@@ -760,6 +932,48 @@ public class NeuralClassifyPlugin implements PlugIn {
 	}
 
 	/**
+	 * First thing wrong with the channel assignment, phrased for the user, or null.
+	 *
+	 * Checked here rather than left to Python because it is the one input a user
+	 * has to describe about their own data, and a mistake in it is worth a dialog
+	 * now instead of a stack trace after the models load. What this cannot know
+	 * is how many channels the image actually has -- that needs the file open, so
+	 * {@code load_patches} checks it per image, before that image's BaSiC fit,
+	 * and reports both counts.
+	 */
+	private static String validateChannels(final ClassifyRequest request) {
+		for (int i = 0; i < CHANNEL_ROLES.length; i++) {
+			final int channel = request.channels[i];
+			if (channel < CHANNEL_ABSENT || channel > MAX_CHANNEL) {
+				return CHANNEL_CAPTIONS[i] + "\n\nMust be a whole channel number "
+					+ "between 1 and " + MAX_CHANNEL
+					+ (ROLE_DAPI.equals(CHANNEL_ROLES[i]) ? "." : ", or 0 if the image "
+						+ "has no " + CHANNEL_ROLES[i] + " channel.");
+			}
+		}
+		if (request.channelOf(ROLE_DAPI) == CHANNEL_ABSENT) {
+			return "The DAPI channel cannot be 0.\n\nNuclei are detected on DAPI, "
+				+ "so without it there are no single cells to classify. Every other "
+				+ "channel may be left out.";
+		}
+		// Two roles on one channel would mean scoring the same pixels twice under
+		// different names, which is never what was meant.
+		for (int i = 0; i < CHANNEL_ROLES.length; i++) {
+			for (int j = i + 1; j < CHANNEL_ROLES.length; j++) {
+				if (request.channels[i] != CHANNEL_ABSENT
+					&& request.channels[i] == request.channels[j])
+				{
+					return "Channel " + request.channels[i] + " is assigned to both "
+						+ CHANNEL_ROLES[i] + " and " + CHANNEL_ROLES[j]
+						+ ".\n\nEach channel of the image can carry only one marker. "
+						+ "Set the one the image does not have to 0.";
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
 	 * Runs (or, when {@code reuseCache} finds a matching entry, re-loads) the
 	 * classification and renders it. Whether the numbers were recomputed or read
 	 * back from disk is decided in Python -- see classify_cell_image.py and
@@ -789,6 +1003,10 @@ public class NeuralClassifyPlugin implements PlugIn {
 		inputs.put("rfp_neighbour_threshold", request.rfpNeighbourThreshold);
 		inputs.put("rfp_legacy_threshold", request.rfpLegacyThreshold);
 		inputs.put("rfp_exclude_radius", request.rfpExcludeRadius);
+		// One canonical string, built from the dialog's numbers rather than typed:
+		// Python owns parsing and validating channel layouts, and this side owns
+		// collecting them, so there is no second place a spelling could drift.
+		inputs.put("channel_order", request.channelOrder());
 		inputs.put("model_dir", request.modelDir);
 		inputs.put("out_dir", request.outDir);
 		inputs.put("generate_upset", request.generateUpset);
@@ -806,9 +1024,12 @@ public class NeuralClassifyPlugin implements PlugIn {
 			}
 		});
 		IJ.log("Neural Image Classifier: running pipeline on " + request.describeInput()
-			+ "  (cellprob " + request.cellprobThreshold
+			+ "  (" + request.describeChannels()
+			+ "; cellprob " + request.cellprobThreshold
 			+ ", flow " + request.flowThreshold
-			+ ", RFP " + request.rfpMethod + " gate " + activeRfpGate(request) + ") ...");
+			+ (request.measures(ROLE_RFP)
+				? ", RFP " + request.rfpMethod + " gate " + activeRfpGate(request) : "")
+			+ ") ...");
 		final long start = System.currentTimeMillis();
 		task.start();
 		task.waitFor();
@@ -826,8 +1047,16 @@ public class NeuralClassifyPlugin implements PlugIn {
 		final List<Map<String, Object>> images =
 			(List<Map<String, Object>>) task.outputs.get("images");
 
+		// What the worker actually measured, which can be narrower than what the
+		// dialog declared: a marker needs its channel AND its checkpoint, and a
+		// model directory may ship only one of the two. Null from an older
+		// worker, in which case the dialog's declaration is the best available
+		// answer.
+		@SuppressWarnings("unchecked")
+		final List<String> markers = (List<String>) task.outputs.get("markers");
+
 		logBatch(task, images);
-		renderResults(cells, request);
+		renderResults(cells, request, markers == null ? request.markers() : markers);
 		showImageFigures(images, request);
 	}
 
@@ -855,11 +1084,19 @@ public class NeuralClassifyPlugin implements PlugIn {
 				IJ.log("Neural Image Classifier: " + name + " FAILED -- " + image.get("detail"));
 				continue;
 			}
+			// Only the markers this image was actually scored for. A "RFP+ 0" for
+			// an image with no RFP channel would read as a finding rather than as
+			// an absent measurement -- which is the whole distinction the channel
+			// settings introduce.
+			@SuppressWarnings("unchecked")
+			final List<String> markers = (List<String>) image.get("markers");
+			final StringBuilder counts = new StringBuilder();
+			counts.append(image.get("n_cells")).append(" cells");
+			appendCount(counts, markers, ROLE_OPC, image.get("n_opc_pos"));
+			appendCount(counts, markers, ROLE_B3TUB, image.get("n_b3tub_pos"));
+			appendCount(counts, markers, ROLE_RFP, image.get("n_rfp_pos"));
 			IJ.log("Neural Image Classifier: " + name
-				+ " -- " + image.get("n_cells") + " cells"
-				+ ", OPC+ " + image.get("n_opc_pos")
-				+ ", B3Tub+ " + image.get("n_b3tub_pos")
-				+ ", RFP+ " + image.get("n_rfp_pos")
+				+ " -- " + counts
 				+ ("cached".equals(status) ? "  (loaded saved results)" : "")
 				+ "  -> " + image.get("out_dir"));
 			final Object detail = image.get("detail");
@@ -884,6 +1121,17 @@ public class NeuralClassifyPlugin implements PlugIn {
 		if (summary != null && !summary.isEmpty()) {
 			IJ.log("Neural Image Classifier: " + summary.get(summary.size() - 1));
 		}
+	}
+
+	/** Appends {@code ", OPC+ 311"} when that marker was measured, else nothing.
+	 *  A null {@code markers} means an older worker that did not report one, so
+	 *  every marker is shown -- the historical behaviour. */
+	private static void appendCount(
+		final StringBuilder out, final List<String> markers,
+		final String marker, final Object count
+	) {
+		if (markers != null && !markers.contains(marker)) return;
+		out.append(", ").append(marker).append("+ ").append(count);
 	}
 
 	/**
@@ -954,11 +1202,25 @@ public class NeuralClassifyPlugin implements PlugIn {
 	 * "Show Cell..." able to pre-fill a cell id from the current selection.
 	 */
 	private void renderResults(
-		final List<Map<String, Object>> cells, final ClassifyRequest request
+		final List<Map<String, Object>> cells, final ClassifyRequest request,
+		final List<String> markers
 	) {
 		if (cells == null || cells.isEmpty()) {
 			IJ.log("Neural Image Classifier: no cells to show.");
 			return;
+		}
+
+		// `markers` is what the run measured, so the table carries columns only
+		// for those. Every cell arrives with all of them -- Python keeps the row
+		// shape fixed -- but a column of 0s for a channel that was never
+		// acquired reads as "no cell was positive", which is a different claim.
+		final boolean hasOpc = markers.contains(ROLE_OPC);
+		final boolean hasB3Tub = markers.contains(ROLE_B3TUB);
+		final boolean hasRfp = markers.contains(ROLE_RFP);
+		if (markers.size() < MARKER_ROLES.length) {
+			IJ.log("Neural Image Classifier: results table shows "
+				+ (markers.isEmpty() ? "cell counts only" : String.join(", ", markers))
+				+ " -- " + request.describeChannels());
 		}
 
 		RoiManager rm = null;
@@ -976,9 +1238,9 @@ public class NeuralClassifyPlugin implements PlugIn {
 			final int y1 = ((Number) c.get("bb_y1")).intValue();
 			final int x0 = ((Number) c.get("bb_x0")).intValue();
 			final int x1 = ((Number) c.get("bb_x1")).intValue();
-			final boolean opcPos = (Boolean) c.get("opc_pos");
-			final boolean b3tubPos = (Boolean) c.get("b3tub_pos");
-			final boolean rfpPos = (Boolean) c.get("rfp_pos");
+			final boolean opcPos = hasOpc && (Boolean) c.get("opc_pos");
+			final boolean b3tubPos = hasB3Tub && (Boolean) c.get("b3tub_pos");
+			final boolean rfpPos = hasRfp && (Boolean) c.get("rfp_pos");
 
 			// Bounding-box ROI for a first working version; a follow-up can
 			// return each cell's native_mask from Python (as an Appose
@@ -997,25 +1259,40 @@ public class NeuralClassifyPlugin implements PlugIn {
 			rt.addValue("image", imageName);
 			rt.addValue("cell_id", ((Number) c.get("cell_id")).doubleValue());
 			rt.addValue("patch_idx", ((Number) c.get("patch_idx")).doubleValue());
-			rt.addValue("opc_prob", ((Number) c.get("opc_prob")).doubleValue());
-			rt.addValue("opc_pos", opcPos ? 1 : 0);
-			rt.addValue("b3tub_prob", ((Number) c.get("b3tub_prob")).doubleValue());
-			rt.addValue("b3tub_pos", b3tubPos ? 1 : 0);
-			rt.addValue("rfp_pos", rfpPos ? 1 : 0);
-			// Both RFP rules travel with every cell, whichever one made the
-			// call, so the table can be re-read under the other one without
-			// re-running the image. They are NOT on the same scale -- different
-			// background estimators -- so a single gate cannot be compared
-			// across the two columns.
-			rt.addValue("rfp_method", String.valueOf(c.get("rfp_method")));
-			rt.addValue("rfp_neighbour_score",
-				((Number) c.get("rfp_neighbour_score")).doubleValue());
-			rt.addValue("rfp_neighbour_pos", (Boolean) c.get("rfp_neighbour_pos") ? 1 : 0);
-			rt.addValue("rfp_legacy_pos", (Boolean) c.get("rfp_legacy_pos") ? 1 : 0);
-			rt.addValue("rfp_score", ((Number) c.get("rfp_score")).doubleValue());
-			rt.addValue("opc_channel_score", ((Number) c.get("opc_channel_score")).doubleValue());
-			rt.addValue("b3tub_channel_score",
-				((Number) c.get("b3tub_channel_score")).doubleValue());
+			if (hasOpc) {
+				rt.addValue("opc_prob", ((Number) c.get("opc_prob")).doubleValue());
+				rt.addValue("opc_pos", opcPos ? 1 : 0);
+			}
+			if (hasB3Tub) {
+				rt.addValue("b3tub_prob", ((Number) c.get("b3tub_prob")).doubleValue());
+				rt.addValue("b3tub_pos", b3tubPos ? 1 : 0);
+			}
+			if (hasRfp) {
+				rt.addValue("rfp_pos", rfpPos ? 1 : 0);
+				// Both RFP rules travel with every cell, whichever one made the
+				// call, so the table can be re-read under the other one without
+				// re-running the image. They are NOT on the same scale --
+				// different background estimators -- so a single gate cannot be
+				// compared across the two columns.
+				rt.addValue("rfp_method", String.valueOf(c.get("rfp_method")));
+				rt.addValue("rfp_neighbour_score",
+					((Number) c.get("rfp_neighbour_score")).doubleValue());
+				rt.addValue("rfp_neighbour_pos", (Boolean) c.get("rfp_neighbour_pos") ? 1 : 0);
+				rt.addValue("rfp_legacy_pos", (Boolean) c.get("rfp_legacy_pos") ? 1 : 0);
+				rt.addValue("rfp_score", ((Number) c.get("rfp_score")).doubleValue());
+			}
+			// The continuous channel scores are intensity measurements, not
+			// classifier output, so they exist for any marker whose *channel* is
+			// present -- including one whose checkpoint the model directory did
+			// not ship.
+			if (hasOpc) {
+				rt.addValue("opc_channel_score",
+					((Number) c.get("opc_channel_score")).doubleValue());
+			}
+			if (hasB3Tub) {
+				rt.addValue("b3tub_channel_score",
+					((Number) c.get("b3tub_channel_score")).doubleValue());
+			}
 			rt.addValue("n_cells_in_region",
 				((Number) c.get("n_cells_in_region")).doubleValue());
 		}
@@ -1187,17 +1464,21 @@ public class NeuralClassifyPlugin implements PlugIn {
 			final short[] plane = new short[w * h];
 			pixels.position(c * w * h);
 			pixels.get(plane);
-			final String label = c < channelNames.size() ? channelNames.get(c) : ("ch" + c);
-			stack.addSlice(label, new ShortProcessor(w, h, plane, null));
+			stack.addSlice(
+				channelName(channelNames, c), new ShortProcessor(w, h, plane, null));
 		}
 
 		final int cellId = ((Number) cell.get("cell_id")).intValue();
+		// channelName(c) rather than channelNames.get(c): the stack loop above
+		// already tolerates a short list, and the two must not disagree about
+		// how many channels they think there are.
 		final ImagePlus imp = new ImagePlus(
 			roiName(String.valueOf(cell.get("image_name")), cellId), stack);
 		imp.setDimensions(nChannels, 1, 1);
 		final CompositeImage comp = new CompositeImage(imp, CompositeImage.COMPOSITE);
 		for (int c = 0; c < nChannels; c++) {
-			comp.setChannelLut(LUT.createLutFromColor(channelColor(channelNames.get(c))), c + 1);
+			comp.setChannelLut(
+				LUT.createLutFromColor(channelColor(channelName(channelNames, c))), c + 1);
 		}
 		// resetDisplayRange() only rescales the CURRENT channel, so it has to be
 		// driven once per channel: a channel left at its initial 0..0 range renders
@@ -1213,8 +1494,18 @@ public class NeuralClassifyPlugin implements PlugIn {
 		comp.show();
 	}
 
-	/** Cosmetic per-channel display color; DAPI/BF/OPC/RFP/B3Tub is the fixed
-	 *  channel order the pipeline reads CZIs in (see CHANNEL_NAMES in Python). */
+	/** The worker's name for channel {@code index}, or a positional fallback.
+	 *
+	 *  Python sends one name per plane, so the fallback is only reached if that
+	 *  ever stops being true -- in which case a composite with an unlabelled
+	 *  channel is a far better outcome than an exception. */
+	private static String channelName(final List<String> names, final int index) {
+		return names != null && index < names.size() ? names.get(index) : ("ch" + (index + 1));
+	}
+
+	/** Cosmetic per-channel display color, by the role the run assigned that
+	 *  channel. A channel the run does not use comes back named "ch<N>" and
+	 *  falls through to grayscale. */
 	private static Color channelColor(final String channelName) {
 		switch (channelName) {
 			case "DAPI": return Color.BLUE;

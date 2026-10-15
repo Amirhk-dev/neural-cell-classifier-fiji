@@ -16,13 +16,13 @@
 # Run from the repository root, on a machine with `gh` authenticated and a JDK
 # 21+ on PATH. Safe to re-run: an already-published model bundle is left alone.
 #
-#   tools/publish-release.sh v1.0.0
+#   tools/publish-release.sh v1.1.0
 #
 set -euo pipefail
 
 TAG="${1:-}"
 if [[ -z "$TAG" ]]; then
-	echo "usage: tools/publish-release.sh <jar-tag>   e.g. v1.0.0" >&2
+	echo "usage: tools/publish-release.sh <jar-tag>   e.g. v1.1.0" >&2
 	exit 64
 fi
 

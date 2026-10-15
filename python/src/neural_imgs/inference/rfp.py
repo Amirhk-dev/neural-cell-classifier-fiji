@@ -35,14 +35,18 @@ from typing import Literal
 
 import numpy as np
 
+from neural_imgs.channels import DEFAULT_LAYOUT, ChannelLayout
 from neural_imgs.positivity import (
     MarkerScoringInput,
     NeighbourContrastConfig,
     NeighbourContrastHeuristic,
 )
 
-#: Index of RFP in CHANNEL_NAMES.
-RFP_CHANNEL = 2
+#: Index of RFP in the historical fixed channel order. Kept for callers that
+#: predate per-run channel layouts; anything layout-aware asks the run's
+#: :class:`~neural_imgs.channels.ChannelLayout` instead, since RFP may sit
+#: anywhere -- or nowhere, in which case no RFP call is made at all.
+RFP_CHANNEL = DEFAULT_LAYOUT.index_of("RFP")
 
 RfpMethod = Literal["neighbour", "legacy"]
 
@@ -104,24 +108,31 @@ class RfpConfig:
 
 
 def score_rfp_neighbour(
-    cells: list[dict], config: RfpConfig, channel_names: tuple[str, ...],
+    cells: list[dict], config: RfpConfig,
+    layout: ChannelLayout = DEFAULT_LAYOUT,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Neighbour-excluded RFP score + call for ``cells``.
 
-    Each cell must carry ``native_channels`` (index :data:`RFP_CHANNEL` filled),
+    Each cell must carry ``native_channels`` (the RFP index filled),
     ``native_mask`` and ``neighbour_mask`` -- see
     :class:`~neural_imgs.inference.patch_extraction.FastCellExtractor`, which
     populates them as *views* and drops them again as soon as this has run.
+
+    A ``layout`` with no RFP channel returns all-NaN scores and no positives:
+    the run measured no RFP, which is deliberately not the same as having
+    measured it and found nothing (see :mod:`neural_imgs.channels`).
 
     Safe to call per patch: the rule scores each cell only from that cell's own
     arrays, so scoring 16 patches separately and concatenating gives exactly the
     same numbers as one whole-image call -- which is what keeps peak memory flat
     instead of holding every cell's crops until the end.
     """
-    if not cells:
-        return np.empty(0), np.empty(0, dtype=bool)
+    channel = layout.index_of("RFP")
+    if not cells or channel is None:
+        return (np.full(len(cells), np.nan), np.zeros(len(cells), dtype=bool))
+    names = layout.names
     scored = NeighbourContrastHeuristic(config.neighbour_config()).score(
-        MarkerScoringInput(cells=cells, channel_names=tuple(channel_names),
-                           target_channels=(RFP_CHANNEL,))
-    )[f"{channel_names[RFP_CHANNEL]}_neighbour"]
+        MarkerScoringInput(cells=cells, channel_names=names,
+                           target_channels=(channel,))
+    )[f"{names[channel]}_neighbour"]
     return scored.scores, scored.positive

@@ -16,7 +16,9 @@
 │       └── get_cell_crop.py             Appose worker: one cell's raw pixels
 ├── python/                              the pipeline the plugin drives
 │   ├── pyproject.toml
-│   └── src/neural_imgs/...
+│   └── src/neural_imgs/
+│       ├── channels.py                  which channel is which, per run
+│       └── ...
 ├── tools/
 │   ├── prepare_model_bundle.py          builds the models.zip release asset
 │   ├── check-model-asset.sh             verifies a published bundle (curl only)
@@ -72,6 +74,7 @@ of the private research repository (`neural-image-processor`), reduced to the
 import closure the two worker scripts actually reach:
 
 ```
+channels
 inference/{batch,case_montage,fixed_model_pipeline,patch_extraction,reporting,result_cache,rfp}
 positivity/{base,heuristic,neighbour_contrast,soft_mask}
 io/read_image   processing/processing   training/{model,raw_dataset}   utils/utils
@@ -82,6 +85,51 @@ rewritten because the preprocessing applied at inference **must** be the
 preprocessing the shipped checkpoints were trained under. Identical files make
 that claim checkable with `diff -r` instead of something to re-argue after every
 edit.
+
+### The per-run channel layout is a public-repo change
+
+`channels.py` and the per-run `ChannelLayout` threaded through it **originate
+here**, not upstream. Before it, the channel order was a module constant and
+five bare integers spread across the pipeline (CellPose on `img[0]`, the OPC
+classifier on channel 1, the RFP rule on channel 2), so an acquisition without
+one of those channels failed on `patch_image`'s `assert C == 5` before anything
+was detected. Making the mapping a declared, per-run object is what lets the
+plugin classify an image with no OPC channel, or with the channels in another
+order, and report the missing marker as *not measured* rather than negative.
+
+So `diff -r` against the private repo reports these too, and they are **drift to
+upstream, not drift to undo**:
+
+```
+channels.py                          new
+inference/fixed_model_pipeline.py    layout on PatchedImage / ClassifyImageInput /
+                                     ClassifyImageOutput; build_raw_cfg takes one;
+                                     load_models skips a missing checkpoint;
+                                     measured_markers()
+inference/patch_extraction.py        CellExtractionConfig.layout; no channel literals
+inference/rfp.py                     score_rfp_neighbour takes a layout
+inference/reporting.py               MarkerAxes-driven UpSet / quantification / CSV
+inference/case_montage.py            panels and cases follow the layout
+inference/batch.py                   BatchInput.layout; per-image layout checks
+inference/result_cache.py            layout in the cache key and the payload
+processing/processing.py             no `assert C == 5`; dapi_channel parameter
+```
+
+Two invariants inside that are load-bearing and easy to break:
+
+- **`prod_exp_name()` must keep using the *training* channel order.** Its
+  `_ch<N>` suffix names a directory inside the published model bundle, so it has
+  to be the same string on every run whatever the image's layout is. It reads
+  `DEFAULT_ORDER`, never the run's layout. `build_raw_cfg()` is the opposite: its
+  `channels` indexes *this* image, so it must use the run's layout.
+- **A default-layout run must stay byte-identical.** `DEFAULT_LAYOUT` is the old
+  fixed order, every entry point defaults to it, `CacheKey.channel_fingerprint`
+  defaults to its fingerprint so pre-layout cache entries are not invalidated,
+  and `QuantificationSummary.lines()` returns the published three-line block
+  verbatim when all three markers are measured. Those are the properties to
+  re-check after touching any of this.
+
+### Two files that depart for unrelated reasons
 
 Two files depart from that on purpose. The first is `training/__init__.py`,
 trimmed to re-export only `model` and `raw_dataset`. The full package also exports the trainer,
@@ -104,6 +152,7 @@ closure is still closed:
 ```bash
 PYTHONPATH=python/src python -c "
 import sys, neural_imgs.inference, neural_imgs.training
+from neural_imgs.channels import ChannelLayout, MarkerAxes
 from neural_imgs.inference.fixed_model_pipeline import load_models, crop_cell, load_patches
 from neural_imgs.inference.batch import BatchClassifier, discover_images
 assert 'neural-cell-classifier-fiji' in neural_imgs.__file__, 'shadowed by another install'
@@ -132,7 +181,10 @@ Delete `target/` by hand rather than relying on `mvn clean`: a plain `package`
 copies over a stale `target/classes`, which is how `scripts/__pycache__/*.pyc`
 once ended up inside a shipped jar.
 
-Bump `BUILD_ID` in `NeuralClassifyPlugin.java` on every jar you hand over. It is
+Keep `BUILD_ID` in `NeuralClassifyPlugin.java` in step with `<version>` in
+`pom.xml` — the pom names the jar, `BUILD_ID` is what the running plugin claims
+to be, and the two disagreeing is the one thing that makes a stale-class report
+unreadable. Bump both on every jar you hand over. It is
 shown in the dialog title and the first Log line, and it is the only way to tell
 a bug from a stale class — Fiji keeps a plugin's classes loaded until it
 *restarts*, so "I copied the new jar in" and "Fiji is running the new jar" are
@@ -197,7 +249,7 @@ the asset the way a biologist's Fiji will (anonymously, through GitHub's
 redirect) and checks it against the constants compiled into the jar.
 
 If you have [`gh`](https://cli.github.com) installed,
-`tools/publish-release.sh v1.0.0` does all of it in one shot: it reads
+`tools/publish-release.sh v1.1.0` does all of it in one shot: it reads
 `BUNDLE_VERSION` and `BUNDLE_SHA256` back out of the Java source rather than
 taking them as arguments, so it cannot publish a bundle under a version the jar
 does not request or a zip whose hash the jar will reject, and it refuses to

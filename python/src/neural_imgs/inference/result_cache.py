@@ -25,7 +25,9 @@ everything about one run together; the CZI's own directory is often a read-only
 share, and a hidden per-user cache would be invisible and unclean-able.
 
 A cache entry is only reused when it provably describes the *same computation*
-(see :class:`CacheKey`); any mismatch reports ``stale`` and the caller re-runs
+(see :class:`CacheKey`) -- which now includes *which channel was which*, since a
+run that measured two markers and a run that measured three produce different
+tables from the same image. Any mismatch reports ``stale`` and the caller re-runs
 rather than silently serving numbers from different settings or different
 weights. Moving the CZI to another folder is explicitly not such a mismatch --
 its location is not an input to the classification.
@@ -41,6 +43,7 @@ from typing import Literal
 
 import numpy as np
 
+from neural_imgs.channels import DEFAULT_LAYOUT, ChannelLayout
 from neural_imgs.inference.fixed_model_pipeline import (
     CellResult,
     ClassifyImageOutput,
@@ -110,12 +113,20 @@ class CacheKey:
     # models_fingerprint says nothing about it -- without this, changing the gate
     # would silently serve calls made at the old one.
     rfp_fingerprint: str = RfpConfig().fingerprint()
+    # Which channel carried which marker. A reordered or reduced layout scores
+    # different pixels and measures a different set of markers, so entries
+    # written under one must never be served to the other. Defaulted to the
+    # historical order so pre-layout entries -- which could only have been
+    # written under it -- still match a default-layout run and are not
+    # needlessly re-classified.
+    channel_fingerprint: str = DEFAULT_LAYOUT.fingerprint()
 
     @classmethod
     def build(
         cls, image_path: str | Path, patch_grid: int, model_dir: str | Path,
         flow_threshold: float, cellprob_threshold: float,
         rfp: RfpConfig | None = None,
+        layout: ChannelLayout | None = None,
     ) -> "CacheKey":
         image_path = Path(image_path)
         return cls(
@@ -126,6 +137,7 @@ class CacheKey:
             cellprob_threshold=float(cellprob_threshold),
             models_fingerprint=model_fingerprint(model_dir),
             rfp_fingerprint=(rfp or RfpConfig()).fingerprint(),
+            channel_fingerprint=(layout or DEFAULT_LAYOUT).fingerprint(),
         )
 
     def mismatch_reason(self, other: "CacheKey") -> str | None:
@@ -148,6 +160,9 @@ class CacheKey:
             return "model bundle changed (different checkpoints or thresholds)"
         if self.rfp_fingerprint != other.rfp_fingerprint:
             return f"RFP rule changed ({other.rfp_fingerprint} -> {self.rfp_fingerprint})"
+        if self.channel_fingerprint != other.channel_fingerprint:
+            return (f"channel assignment changed ({other.channel_fingerprint} -> "
+                    f"{self.channel_fingerprint})")
         return None
 
     def moved_from(self, other: "CacheKey") -> str | None:
@@ -339,6 +354,13 @@ class ClassificationCache:
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "key": asdict(key),
             "image_shape": [int(v) for v in output.image_shape],
+            # Stored as well as fingerprinted in the key: the key only decides
+            # whether an entry may be reused, while the restored output has to
+            # know which markers these calls mean anything for.
+            "channel_order": list(output.layout.roles),
+            # Narrower than the layout only when a checkpoint was missing; stored
+            # so a restored run reports the same marker set it was computed with.
+            "measured_markers": list(output.markers),
             "cells": [_cell_to_dict(c) for c in output.cells],
         }
         tmp = path.with_suffix(".json.tmp")
@@ -363,6 +385,13 @@ class ClassificationCache:
             output = ClassifyImageOutput(
                 image_shape=tuple(payload["image_shape"]),
                 cells=[_cell_from_dict(d) for d in payload["cells"]],
+                # Absent from entries written before layouts existed, which
+                # could only have used the historical order.
+                layout=ChannelLayout.parse(payload.get("channel_order")),
+                # Absent from pre-layout entries, where it equals the layout's
+                # own marker set -- which is what None means.
+                measured=(tuple(payload["measured_markers"])
+                          if "measured_markers" in payload else None),
             )
             created_at = str(payload["created_at"])
         except Exception as exc:  # noqa: BLE001 -- a bad cache must never break a run

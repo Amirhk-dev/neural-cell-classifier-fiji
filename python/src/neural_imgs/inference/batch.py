@@ -31,6 +31,14 @@ genuinely new images are prepared.
 an out-of-memory patch or a montage that cannot render is recorded as a failed
 :class:`ImageOutcome` and the remaining images still run. The caller gets one
 outcome per image, in input order, whatever happened.
+
+**One channel layout for the batch.** :attr:`BatchInput.layout` says which
+channel of each image carries which marker, and therefore which markers the run
+measures at all; the images in a folder come off one acquisition, so declaring
+it per batch rather than per image is what keeps the combined table's columns
+from changing halfway down it. An image whose channel count contradicts the
+declaration fails on its own, in the prepare lane, before its BaSiC fit -- and
+the rest of the folder still runs.
 """
 
 from __future__ import annotations
@@ -43,6 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
+from neural_imgs.channels import DEFAULT_LAYOUT, ChannelLayout, set_label
 from neural_imgs.inference import reporting
 from neural_imgs.inference.case_montage import save_case_montages
 from neural_imgs.inference.fixed_model_pipeline import (
@@ -102,6 +111,12 @@ class BatchInput:
     flow_threshold: float = 0.2
     cellprob_threshold: float = 0.1
     rfp: RfpConfig = field(default_factory=RfpConfig)
+    #: Which channel of each image carries which marker. One declaration for
+    #: the whole batch: the images in a folder come off the same acquisition,
+    #: and a per-image layout would mean a folder run whose columns change
+    #: halfway down the combined table. Markers it does not name are not
+    #: measured -- see neural_imgs.channels.
+    layout: ChannelLayout = DEFAULT_LAYOUT
     reuse_cache: bool = True
     generate_upset: bool = True
     show_case_montage: bool = False
@@ -111,6 +126,13 @@ class BatchInput:
 
     def out_dir_for(self, image_path: str | Path) -> Path:
         return Path(self.out_root) / Path(image_path).stem
+
+    def cache_key(self, image_path: str | Path) -> CacheKey:
+        """This run's cache identity for one image. One construction site, so a
+        lookup and the save that follows it cannot be keyed differently."""
+        return CacheKey.build(
+            image_path, self.patch_grid, self.model_dir,
+            self.flow_threshold, self.cellprob_threshold, self.rfp, self.layout)
 
 
 @dataclass
@@ -135,17 +157,28 @@ class ImageOutcome:
     #: Non-fatal problems: a montage or UpSet plot that failed while the
     #: classification itself succeeded. Never empties ``cells``.
     warnings: list[str] = field(default_factory=list)
+    #: Markers this image was scored for. The ``n_*_pos`` counts of a marker
+    #: absent from here are 0 because it was never measured, not because no
+    #: cell was positive -- so nothing reports them as a result.
+    markers: tuple[str, ...] = field(default_factory=lambda: DEFAULT_LAYOUT.markers)
 
     @property
     def ok(self) -> bool:
         return self.status != "failed"
 
+    def count_line(self) -> str:
+        """``"2074 cells, OPC+ 311, B3Tub+ 97"`` -- measured markers only."""
+        counts = {"OPC": self.n_opc_pos, "B3Tub": self.n_b3tub_pos,
+                  "RFP": self.n_rfp_pos}
+        parts = [f"{self.n_cells} cells"]
+        parts += [f"{m}+ {counts[m]}" for m in self.markers]
+        return ", ".join(parts)
+
     def summary_line(self) -> str:
         name = Path(self.image_path).name
         if self.status == "failed":
             return f"{name}: FAILED -- {self.detail}"
-        return (f"{name}: {self.n_cells} cells, OPC+ {self.n_opc_pos}, "
-                f"B3Tub+ {self.n_b3tub_pos}, RFP+ {self.n_rfp_pos} "
+        return (f"{name}: {self.count_line()} "
                 f"({self.status}, {self.elapsed_s:.1f}s)")
 
 
@@ -199,16 +232,23 @@ class BatchClassifier:
 
     # -- preparation lane ---------------------------------------------------
 
-    def _prepare(self, image_path: str, patch_grid: int, gate: threading.Semaphore) -> _Prepared:
+    def _prepare(
+        self, image_path: str, patch_grid: int, layout: ChannelLayout,
+        gate: threading.Semaphore,
+    ) -> _Prepared:
         """Read one CZI and fit BaSiC. Runs on the prefetch pool.
 
         ``gate`` is acquired *here*, not at submission: a task that has not
         started yet costs nothing, while a finished one pins its whole patch
         array. Released by the consumer once the image has been classified.
+
+        A channel declaration that does not fit the file is caught by
+        ``load_patches`` here, i.e. before the BaSiC fit -- so a mistyped layout
+        costs one file read per image rather than a minutes-long fit.
         """
         gate.acquire()
         try:
-            patched = load_patches(image_path, patch_grid)
+            patched = load_patches(image_path, patch_grid, layout)
             preprocessor = PatchPreprocessor.fit(patched)
             return _Prepared(patched=patched, preprocessor=preprocessor)
         except BaseException:
@@ -236,42 +276,61 @@ class BatchClassifier:
         propagates -- the classification is already saved by the time this runs.
         """
         stem, label = Path(image_path).stem, Path(image_path).name
+        # What was actually measured -- the image's reconciled layout narrowed by
+        # any marker whose checkpoint the model directory did not ship, or
+        # whatever a cache entry recorded. Not ``input.layout``, which is only
+        # what was declared.
+        axes = result.axes
 
         outcome.csv_path = str(reporting.save_cells_csv(
-            result.cells, out_dir / f"{stem}_fixed_model_classifications.csv"))
+            result.cells, out_dir / f"{stem}_fixed_model_classifications.csv", axes))
 
-        summary = reporting.quantify(result.cells)
+        summary = reporting.quantify(result.cells, axes)
         outcome.quantification = summary.lines()
         outcome.quantification_path = str(reporting.save_quantification(
-            summary, out_dir / f"{stem}_quantification.txt", label))
+            summary, out_dir / f"{stem}_quantification.txt", label,
+            channel_note=result.layout.describe()))
 
         if input.generate_upset:
-            try:
-                path = out_dir / f"{stem}_upset_plot.png"
-                reporting.save_upset_plot(result.cells, path, image_label=label)
-                outcome.upset_plot_path = str(path)
-            except Exception as exc:  # noqa: BLE001
-                outcome.warnings.append(f"UpSet plot failed: {type(exc).__name__}: {exc}")
+            if not axes:
+                # Not a warning: a DAPI-only run has no co-positivity to plot,
+                # and the checkbox asking for one is not the user's mistake.
+                outcome.detail = "; ".join(filter(None, [
+                    outcome.detail,
+                    "no UpSet plot: this run measured no marker channels"]))
+            else:
+                try:
+                    path = out_dir / f"{stem}_upset_plot.png"
+                    reporting.save_upset_plot(
+                        result.cells, path, image_label=label, axes=axes)
+                    outcome.upset_plot_path = str(path)
+                except Exception as exc:  # noqa: BLE001
+                    outcome.warnings.append(
+                        f"UpSet plot failed: {type(exc).__name__}: {exc}")
 
-        if input.show_case_montage:
+        if input.show_case_montage and axes:
             try:
                 # The montages show the illumination-corrected pixels the cells
                 # were detected on, so they need that image's BaSiC fit. A
                 # freshly classified image still has it (``prepared``); a cached
                 # one never read the CZI at all and has to now -- minutes,
                 # against the hours a re-classification would cost.
-                fitted = prepared or self._prepared_for(image_path, input.patch_grid)
+                fitted = prepared or self._prepared_for(
+                    image_path, input.patch_grid, result.layout)
                 montage = save_case_montages(
-                    result.cells, fitted.preprocessor, out_dir, stem, image_label=label)
+                    result.cells, fitted.preprocessor, out_dir, stem,
+                    image_label=label, axes=axes)
                 outcome.case_montage_paths = [str(p) for p in montage.paths.values()]
             except Exception as exc:  # noqa: BLE001
                 outcome.warnings.append(
                     f"case montages failed: {type(exc).__name__}: {exc}")
 
-    def _prepared_for(self, image_path: str, patch_grid: int) -> _Prepared:
+    def _prepared_for(
+        self, image_path: str, patch_grid: int, layout: ChannelLayout
+    ) -> _Prepared:
         """Read + fit on demand, for a cached image whose pixels are needed."""
         self._report(f"Reading {Path(image_path).name} for the case montages...", None, None)
-        patched = load_patches(image_path, patch_grid)
+        patched = load_patches(image_path, patch_grid, layout)
         return _Prepared(patched=patched, preprocessor=PatchPreprocessor.fit(patched))
 
     # -- the run ------------------------------------------------------------
@@ -281,6 +340,15 @@ class BatchClassifier:
         n = len(input.image_paths)
         outcomes: list[ImageOutcome] = []
         cells_by_image: dict[str, ClassifyImageOutput] = {}
+        # Said once, before any image: every count, figure and ratio below is
+        # relative to this, and a reader who misses it can misread the whole run.
+        self._report(input.layout.describe(), None, None)
+        missing = input.layout.missing_markers
+        if missing:
+            self._report(
+                "Not measured in this run: "
+                + ", ".join(set_label(m) for m in missing)
+                + " -- no channel declared for it", None, None)
 
         # Cache lookups first, for every image: a hit must not cause a CZI read,
         # so the prefetch lane below is only given the images that will actually
@@ -293,10 +361,8 @@ class BatchClassifier:
                 lookups[image_path] = None
                 continue
             try:
-                key = CacheKey.build(
-                    image_path, input.patch_grid, input.model_dir,
-                    input.flow_threshold, input.cellprob_threshold, input.rfp)
-                lookups[image_path] = ClassificationCache(out_dir).load(key)
+                lookups[image_path] = ClassificationCache(out_dir).load(
+                    input.cache_key(image_path))
             except Exception as exc:  # noqa: BLE001 -- a bad cache never blocks a run
                 self._report(f"Cache check failed for {Path(image_path).name}: {exc}",
                              None, None)
@@ -313,14 +379,15 @@ class BatchClassifier:
         with ThreadPoolExecutor(max(1, input.prefetch), thread_name_prefix="prepare") as pool:
             for image_path in to_prepare:
                 futures[image_path] = pool.submit(
-                    self._prepare, image_path, input.patch_grid, gate)
+                    self._prepare, image_path, input.patch_grid, input.layout, gate)
 
             for index, image_path in enumerate(input.image_paths, start=1):
                 label = Path(image_path).name
                 out_dir = input.out_dir_for(image_path)
                 self._report(f"[{index}/{n}] {label}", index - 1, n)
                 outcome = ImageOutcome(
-                    image_path=image_path, out_dir=str(out_dir), status="classified")
+                    image_path=image_path, out_dir=str(out_dir), status="classified",
+                    markers=input.layout.markers)
                 t_image = time.perf_counter()
                 prepared: _Prepared | None = None
                 try:
@@ -346,7 +413,8 @@ class BatchClassifier:
                                 image_path=image_path, patch_grid=input.patch_grid,
                                 flow_threshold=input.flow_threshold,
                                 cellprob_threshold=input.cellprob_threshold,
-                                rfp=input.rfp, n_workers=input.n_workers,
+                                rfp=input.rfp, layout=input.layout,
+                                n_workers=input.n_workers,
                             ),
                             self.models, patched=prepared.patched,
                             preprocessor=prepared.preprocessor,
@@ -355,13 +423,14 @@ class BatchClassifier:
                         )
                         # Saved before anything optional runs: these numbers cost
                         # hours and a montage failure must not lose them.
-                        key = CacheKey.build(
-                            image_path, input.patch_grid, input.model_dir,
-                            input.flow_threshold, input.cellprob_threshold, input.rfp)
-                        outcome.cache_path = str(
-                            ClassificationCache(out_dir).save(key, result))
+                        outcome.cache_path = str(ClassificationCache(out_dir).save(
+                            input.cache_key(image_path), result))
 
                     cells_by_image[image_path] = result
+                    # From the result, not from the declaration: a cache hit
+                    # carries the layout it was computed under, and a fresh run
+                    # carries the image's reconciled one.
+                    outcome.markers = result.markers
                     outcome.n_cells = len(result.cells)
                     outcome.n_opc_pos = sum(1 for c in result.cells if c.opc_pos)
                     outcome.n_b3tub_pos = sum(1 for c in result.cells if c.b3tub_pos)

@@ -1,3 +1,5 @@
+from neural_imgs.channels import ChannelLayout, MarkerAxes
+
 from .result_cache import (
     CachedClassification,
     CacheKey,
@@ -31,6 +33,7 @@ from .fixed_model_pipeline import (
     classify_image,
     load_models,
     prod_exp_name,
+    run_markers,
 )
 
 __all__ = [
@@ -39,6 +42,8 @@ __all__ = [
     "BatchOutput",
     "CacheKey",
     "CellExtractionConfig",
+    "ChannelLayout",
+    "MarkerAxes",
     "CacheLookup",
     "CachedClassification",
     "CellResult",
@@ -62,4 +67,5 @@ __all__ = [
     "load_models",
     "model_fingerprint",
     "prod_exp_name",
+    "run_markers",
 ]

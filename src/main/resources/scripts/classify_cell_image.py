@@ -20,6 +20,17 @@
 #                                 silently mean something else after a switch.
 #   rfp_exclude_radius      : int   -- native px around other nuclei dropped from
 #                                 the background pool (neighbour rule only)
+#   channel_order      : str   -- comma-separated role per image channel, in file
+#                                 order, e.g. "DAPI,OPC,RFP,B3Tub,BF" (the
+#                                 historical fixed order, and what an empty
+#                                 string means). "-" marks a channel this run
+#                                 does not use; a role left out entirely is NOT
+#                                 measured -- the run proceeds and reports it as
+#                                 such instead of calling every cell negative in
+#                                 it. DAPI is the one role that cannot be left
+#                                 out: nuclei are detected on it. Shorter than
+#                                 the image is fine -- trailing channels are
+#                                 ignored. See neural_imgs.channels.
 #   model_dir          : str   -- per-marker checkpoints + thresholds.json
 #   out_dir            : str   -- OUTPUT ROOT. One subfolder per image is created
 #                                 inside it, named after the image, holding that
@@ -40,12 +51,13 @@
 
 from pathlib import Path
 
+from neural_imgs.channels import ChannelLayout
 from neural_imgs.inference.batch import (
     BatchClassifier,
     BatchInput,
     discover_images,
 )
-from neural_imgs.inference.fixed_model_pipeline import load_models
+from neural_imgs.inference.fixed_model_pipeline import load_models, measured_markers
 from neural_imgs.inference.rfp import RfpConfig
 
 
@@ -68,6 +80,13 @@ if input_dir:  # noqa: F821
 else:
     _paths = [image_path]  # noqa: F821
 
+# Parsed before anything expensive: a channel declaration that cannot be read at
+# all should fail in milliseconds, not after the models are loaded. Whether it
+# *fits each image* can only be checked once a file is open, which load_patches
+# does per image, in the prepare lane, before that image's BaSiC fit.
+_layout = ChannelLayout.parse(channel_order)  # noqa: F821
+_report(_layout.describe())
+
 _rfp = RfpConfig(
     method=rfp_method,  # noqa: F821
     neighbour_threshold=float(rfp_neighbour_threshold),  # noqa: F821
@@ -83,6 +102,12 @@ if "MODELS" not in globals() or MODELS_DIR != model_dir:  # noqa: F821
     MODELS_DIR = model_dir  # noqa: F821
     task.export(MODELS=MODELS, MODELS_DIR=MODELS_DIR)  # noqa: F821
 
+# Which markers this run can actually call: a channel for them AND a shipped
+# checkpoint. Reported here rather than left implicit, because it decides what
+# the table, the figures and the ratios will contain.
+_measured = measured_markers(_layout, MODELS)  # noqa: F821
+_report("Measured in this run: " + (", ".join(_measured) or "nothing but cell counts"))
+
 batch_input = BatchInput(
     image_paths=_paths,
     out_root=out_dir,  # noqa: F821
@@ -91,6 +116,7 @@ batch_input = BatchInput(
     flow_threshold=flow_threshold,  # noqa: F821
     cellprob_threshold=cellprob_threshold,  # noqa: F821
     rfp=_rfp,
+    layout=_layout,
     reuse_cache=reuse_cache,  # noqa: F821
     generate_upset=generate_upset,  # noqa: F821
     show_case_montage=show_case_montage,  # noqa: F821
@@ -117,6 +143,15 @@ task.outputs["batch_summary"] = result.summary_lines()  # noqa: F821
 task.outputs["n_images"] = len(result.outcomes)  # noqa: F821
 task.outputs["n_failed"] = result.n_failed  # noqa: F821
 
+# What the per-cell marker fields below actually mean. Every cell carries all of
+# them whatever the layout -- a stable row shape is what keeps the Java side from
+# branching on key presence -- so the ones for an unmeasured marker are NaN and
+# False, and this list is how the plugin knows not to render them as results.
+task.outputs["channel_order"] = list(_layout.roles)  # noqa: F821
+task.outputs["channel_names"] = list(_layout.names)  # noqa: F821
+task.outputs["markers"] = list(_measured)  # noqa: F821
+task.outputs["channel_summary"] = _layout.describe()  # noqa: F821
+
 task.outputs["images"] = [  # noqa: F821
     {
         "image_path": o.image_path,
@@ -131,6 +166,7 @@ task.outputs["images"] = [  # noqa: F821
         "elapsed_s": float(o.elapsed_s),
         "csv_path": o.csv_path,
         "cache_path": o.cache_path,
+        "markers": list(o.markers),
         "quantification": list(o.quantification),
         "quantification_path": o.quantification_path,
         "upset_plot_path": o.upset_plot_path,
@@ -169,5 +205,7 @@ task.outputs["cells"] = [  # noqa: F821
     for c in output.cells
 ]
 
-# Lets get_cell_crop.py re-open whichever image a requested cell belongs to.
-task.export(PATCH_GRID=patch_grid)  # noqa: F821
+# Lets get_cell_crop.py re-open whichever image a requested cell belongs to,
+# reading the same channels this run did -- otherwise a single-cell view could
+# come back with the planes in a different order from the one that was scored.
+task.export(PATCH_GRID=patch_grid, CHANNEL_ORDER=list(_layout.roles))  # noqa: F821

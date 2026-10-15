@@ -5,7 +5,7 @@ Two artefacts reach users, and **the order matters**:
 | # | Artefact | Where | Size |
 | --- | --- | --- | --- |
 | 1 | `models.zip` | release tagged `models-v1` | ~90 MB |
-| 2 | `Neural_Image_Classifier-1.0.0.jar` | release tagged `v1.0.0` | ~15 MB |
+| 2 | `Neural_Image_Classifier-1.1.0.jar` | release tagged `v1.1.0` | ~15 MB |
 
 The jar hardcodes the model bundle's URL and SHA-256 (`ModelBootstrap.java`), so
 **the model release must exist and be public before the jar is published.**
@@ -28,7 +28,7 @@ python tools/prepare_model_bundle.py \
     --src /path/to/classifier_raw/models \
     --out dist/models.zip
 
-# the jar -> target/Neural_Image_Classifier-1.0.0.jar
+# the jar -> target/Neural_Image_Classifier-1.1.0.jar
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 rm -rf target        # not `mvn clean` -- see DEVELOPING.md
 PATH="$JAVA_HOME/bin:$HOME/miniconda3/envs/neural_env/bin:$PATH" \
@@ -50,7 +50,7 @@ The browser upload happens from your laptop, so pull both files out of the
 remote first. In VS Code's Explorer, right-click → **Download**:
 
 - `dist/models.zip`
-- `target/Neural_Image_Classifier-1.0.0.jar`
+- `target/Neural_Image_Classifier-1.1.0.jar`
 
 (Or `scp`/`rsync` them, whichever you normally use.)
 
@@ -154,10 +154,10 @@ Only once Step 3 verified `OK`. Same flow, new release:
 
 | Field | Value |
 | --- | --- |
-| **Tag** | `v1.0.0` |
+| **Tag** | `v1.1.0` |
 | **Target** | `main` |
-| **Title** | `v1.0.0` |
-| **Attach files** | drag in **`Neural_Image_Classifier-1.0.0.jar`** |
+| **Title** | `v1.1.0` |
+| **Attach files** | drag in **`Neural_Image_Classifier-1.1.0.jar`** |
 
 Description — this is what biologists read, so keep it to the install:
 

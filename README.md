@@ -11,6 +11,12 @@ Results come back as a Fiji results table, CSVs, an UpSet co-positivity plot,
 the three reprogramming ratios, and optional per-cell ROIs and example-cell
 figures.
 
+**You say which channel is which, and markers you do not have are optional.**
+The dialog's *Channels* group holds one channel number per marker; `0` means
+"not in my images" and the run still goes ahead, reporting that marker as *not
+measured* rather than as negative. Only DAPI is required — nuclei are detected
+on it (Q12).
+
 **Install is one file.** Drop the `.jar` into Fiji and run it — the first run
 downloads its own Python environment and the trained models and caches both.
 Nothing else to install, no files to copy by hand, no admin rights.
@@ -32,7 +38,7 @@ Nothing else to install, no files to copy by hand, no admin rights.
 
 ### Steps
 
-1. Download **`Neural_Image_Classifier-1.0.0.jar`** from the
+1. Download **`Neural_Image_Classifier-1.1.0.jar`** from the
    [latest release](https://github.com/Amirhk-dev/neural-cell-classifier-fiji/releases/latest).
 2. Get it into `Fiji.app/plugins/`, either way:
    - **From inside Fiji:** `Plugins > Install...`, pick the `.jar`, and accept
@@ -96,8 +102,9 @@ Click the dialog's **Help** button for the same guidance inside Fiji.
   the path that will actually be read is editable. The greyed field keeps its
   text, and both persist between runs, so switching mode never means retyping a
   path.
-- **CZI image** — one Zeiss `.czi`, **5 channels in the order DAPI, OPC, RFP,
-  B3Tub, BF**.
+- **CZI image** — one Zeiss `.czi`. Which channel carries which marker is set
+  in **Channels** below; the defaults are the 5-channel order DAPI, OPC, RFP,
+  B3Tub, BF (Q12).
 - **Input folder** — every `.czi` *directly* inside it is classified. Not
   recursive (Q8).
 - **Model directory** — pre-filled with `~/.neural-imgs/models`, downloaded on
@@ -105,6 +112,18 @@ Click the dialog's **Help** button for the same guidance inside Fiji.
   directory is never overwritten.
 - **Output directory** — the output **root**. One subfolder per image is created
   inside it, named after the image (Q8).
+
+**Channels — which channel carries which marker**
+
+Five fields, one per marker, each holding that marker's **channel number in your
+image, counting from 1**: `DAPI 1`, `OPC 2`, `RFP 3`, `B3-Tub 4`,
+`Brightfield 5` by default — the acquisition the models were trained on, so
+images in that order need nothing changed.
+
+Set a marker to **`0`** when your images do not have it: the run proceeds and
+that marker is reported as *not measured*. `DAPI` cannot be `0`. The numbers
+need not be in order or contiguous, and channels above the highest one you use
+are ignored (Q12).
 
 **Tiling and nucleus detection**
 
@@ -135,19 +154,23 @@ readable while it is up.
 - **One combined Results table** across every image processed, with an `image`
   column first (`cell_id` restarts at 0 per image, so the two together identify
   a cell), plus `opc_prob`, `b3tub_prob`, `rfp_pos`, both RFP scores, the
-  bounding box and `n_cells_in_region`.
+  bounding box and `n_cells_in_region`. A marker you set to `0` gets **no
+  columns at all** rather than a column of zeros (Q12).
 - A per-image CSV, `<image-name>_fixed_model_classifications.csv`, inside that
   image's subfolder, and a combined `all_images_classifications.csv` at the
   output root.
-- An **UpSet co-positivity plot**, `<image-name>_upset_plot.png` (if ticked).
+- An **UpSet co-positivity plot**, `<image-name>_upset_plot.png` (if ticked),
+  with one set per marker you measured — three sets and 8 cases by default, two
+  sets and 4 cases with one marker left out, and none at all for a DAPI-only
+  run (Q12).
   For a single image it also opens in a window; for a folder run the paths are
   logged instead — twenty images would otherwise open sixty windows at the end
   of an overnight run.
 - The three **reprogramming ratios** (OPC state ratio, transduction performance,
   conversion ratio) printed in the Log and saved as
   `<image-name>_quantification.txt`.
-- **8 per-case example cells**, `<image-name>_upset_case_<combo>.png` (if
-  ticked, Q5).
+- **One per-case example cell** per UpSet case, `<image-name>_upset_case_<combo>.png`
+  — 8 of them with all three markers (if ticked, Q5).
 - **Saved results**, `<image-name>_classification_cache.json` plus
   `<image-name>_classification_masks.npz`, so the same image never has to be
   classified twice (Q6).
@@ -162,8 +185,9 @@ batch** — it is logged as `FAILED` and the rest still run.
 ### Looking at one cell
 
 `Plugins > Neural Image Processor > Show Cell (all channels)...` opens a
-5-channel composite (DAPI/OPC/RFP/B3Tub/BF) for one cell — the exact raw pixels
-the classifiers scored. Select its ROI in the ROI Manager first to pre-fill the
+composite of every channel your run declared (DAPI/OPC/RFP/B3Tub/BF by default)
+for one cell — the exact raw pixels the classifiers scored, read in the same
+channel order that scored them. Select its ROI in the ROI Manager first to pre-fill the
 id, or just type one. Toggle channels with the "C" slider
 (`Image > Color > Channels Tool`) like any Fiji composite. It needs a
 `Classify Cells...` run to have happened earlier in the session and does not
@@ -191,7 +215,19 @@ ids restart per image.
   says why the saved results were rejected (Q6).
 - **An image I already classified is being re-classified** — something in the
   saved-results key changed and the Log names it (Q6). Most likely a different
-  output directory, a different patch grid, or a changed CellPose threshold.
+  output directory, a different patch grid, a changed CellPose threshold, or a
+  changed channel assignment.
+- **`the channel layout describes 5 channels (...) but the image has only 3`** —
+  the **Channels** fields ask for a channel the image does not have. Set the
+  markers your images lack to `0` (Q12). In a folder run only that image fails;
+  the rest continue.
+- **A marker's columns are missing from the Results table** — its **Channels**
+  field is `0`, so it was not measured (Q12). The Log's per-image line and the
+  quantification both name what was left out. If the channel *is* set but the
+  marker is still missing, the model directory shipped no checkpoint for it —
+  the Log says so when the models load (Q11).
+- **`no DAPI channel declared`** — `DAPI` is the one channel that cannot be `0`;
+  nuclei are detected on it (Q12).
 - **`java.lang.UnsupportedClassVersionError: ... class file version 65.0 ...
   only recognizes class file versions up to 52.0`** — Fiji's bundled Java is too
   old (52 = Java 8; this plugin needs 21, because Appose does). Download a fresh
@@ -248,8 +284,8 @@ changing it changes results, not just speed.
 
 **4. Does it generate an UpSet plot?**
 Yes, optionally (on by default). Sets are named **OPC**, **Neuron** (B3-Tub+)
-and **Transduced** (RFP+), with a fixed bar order so plots are directly
-comparable across images. It opens as an image window (single-image runs) and is
+and **Transduced** (RFP+) — one set per marker you measured, see Q12 — with a
+fixed bar order so plots are directly comparable across images. It opens as an image window (single-image runs) and is
 saved as `<image-name>_upset_plot.png` next to the CSV. Untick to skip it —
 classification, ROIs and CSV are unaffected.
 
@@ -257,10 +293,11 @@ classification, ROIs and CSV are unaffected.
 Two ways, both opt-in.
 
 **a) One example cell per UpSet case** — the checkbox (off by default). For each
-of the 8 cases it picks one representative cell and renders `DAPI + mask`
-followed by all five channels, with the DAPI mask outlined in green on every
-panel, titled with the case, the cell id and that cell's scores
-(`OPC 0.87 / B3 0.12 / RFP 1`). Each is opened as its own window and saved as
+case it picks one representative cell and renders `DAPI + mask` followed by every
+channel of the run, with the DAPI mask outlined in green on every panel, titled
+with the case, the cell id and that cell's scores
+(`OPC 0.87 / B3 0.12 / RFP 1`, naming only the markers you measured). Three
+markers gives the published 8 figures; two gives 4 (Q12). Each is opened as its own window and saved as
 `<image-name>_upset_case_<combo>.png`, where `<combo>` is the
 `OPC/Neuron/Transduced` flags as `0`/`1` (e.g. `101` = OPC+, Transduced+). Cases
 with no cell in this image are skipped and named in the Log, alongside how many
@@ -303,8 +340,8 @@ it in seconds; only the classification itself is skipped.
 
 Saved results are reused **only** when they provably describe the same
 computation. The file stores a key of: the image file's **size in bytes**, the
-patch grid, both CellPose thresholds, the RFP rule and its gate, and a
-fingerprint of the model bundle (the contents of `thresholds.json` plus each
+patch grid, both CellPose thresholds, the RFP rule and its gate, **the channel
+assignment**, and a fingerprint of the model bundle (the contents of `thresholds.json` plus each
 checkpoint's byte size — deliberately not mtimes, so re-copying an identical
 bundle does not force a needless re-run). If any of those differs the file is
 ignored and the image is re-classified, and the Log prints the reason, e.g.
@@ -407,6 +444,63 @@ one subdirectory per marker containing `best_model.pt`, named exactly as
 [`python/src/neural_imgs/inference/fixed_model_pipeline.py`](python/src/neural_imgs/inference/fixed_model_pipeline.py)
 derives it. A directory that already has all of those is never overwritten by
 the download.
+
+A directory holding **only one** of the two markers also works: the missing one
+is reported in the Log as not measured, exactly as if its channel were absent
+(Q12). The directory names are derived from the channel order the models were
+*trained* on and never change with your **Channels** settings — they identify a
+checkpoint, not a plane of your image.
+
+**12. My images do not have all five channels, or have them in another order.
+Can I still run?**
+Yes, both. The **Channels** group is one field per marker holding that marker's
+channel number in your image, counting from 1, and `0` for a channel your
+images do not have.
+
+| Your images | Channels fields | What runs |
+| --- | --- | --- |
+| DAPI, OPC, RFP, B3Tub, BF (the default) | `1, 2, 3, 4, 5` | everything |
+| DAPI, RFP, B3Tub — **no OPC** | `DAPI 1, OPC 0, RFP 2, B3-Tub 3, BF 0` | Neuron + Transduced calls, conversion ratio, transduction performance |
+| DAPI, OPC, B3Tub — no RFP | `DAPI 1, OPC 2, RFP 0, B3-Tub 3, BF 0` | OPC + Neuron calls and counts; no ratios (all three are fractions of the transduced population) |
+| B3Tub, RFP, DAPI (reordered) | `DAPI 3, OPC 0, RFP 2, B3-Tub 1, BF 0` | Neuron + Transduced, same as row 2 |
+| DAPI only | `DAPI 1`, rest `0` | nucleus detection and a cell count |
+
+**`0` is "not in my images", not "skip this classifier".** A marker set to `0`
+is reported as **not measured**, which is deliberately different from "measured
+and found negative":
+
+- **no column** for it in the Results table or the Fiji CSV (the per-image CSV
+  keeps the column for a stable header, but leaves it **blank** rather than
+  `False`);
+- **no set** for it in the UpSet plot — three markers give the published 8
+  cases, two give 4, one gives 2, none skips the plot entirely;
+- **no ratio** that needs it: with no OPC channel, the OPC state ratio is
+  omitted from the quantification rather than printed as `0/402 = 0.0%`, and a
+  closing `Not measured in this run: ...` line names what was left out;
+- **no per-case montage** panels claiming a probability it never computed.
+
+Everything the missing channel is not needed for is unchanged: tiling, BaSiC,
+CellPose detection, cell extraction, cell ids, ROIs, and the remaining markers'
+classifications are bit-for-bit what a full run would produce for them.
+
+**Only DAPI is required.** Nuclei are detected on DAPI, and every single cell in
+the run — its mask, its crop, its bounding box, its id — comes from that
+detection, so there is nothing to classify without it. The dialog rejects
+`DAPI 0` with that explanation.
+
+**Other things the fields allow.** The numbers need not be in order
+(`DAPI 3` is fine) or contiguous — an undeclared channel below your highest one
+is read, illumination-corrected and then ignored. Channels **above** the highest
+number you use need not be mentioned at all, so one assignment can fit both a
+3-channel and a 5-channel image. Two markers on the same channel is rejected
+before the run starts. An image with **fewer** channels than you assigned is a
+real mismatch: it is reported per image, naming both counts, before that image's
+multi-hour work begins — and in a folder run the other images still go ahead.
+
+The channel assignment is part of the saved-results key (Q6), because a run that
+measured two markers and a run that measured three produce different tables from
+the same image. Changing it re-classifies, and the Log says
+`channel assignment changed (... -> ...)`.
 
 ---
 

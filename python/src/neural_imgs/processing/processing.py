@@ -11,9 +11,13 @@ def squeeze_img(img):
 
 
 def patch_image(img, patch_size=4):
+    # Any channel count: which channel is which is declared per run by a
+    # neural_imgs.channels.ChannelLayout, and the count is checked against that
+    # declaration in load_patches() -- where a mismatch can be reported as
+    # "the layout says 5 channels, the image has 3" instead of a bare assert.
     assert img.ndim == 3, "Expected (C, H, W)"
     C, H, W = img.shape
-    assert C == 5, f"Expected 5 channels, got {C}"
+    assert C >= 1, f"Expected at least one channel, got {C}"
     n_rows, n_cols = patch_size, patch_size
     H_patch = H // n_rows
     W_patch = W // n_cols
@@ -24,7 +28,7 @@ def patch_image(img, patch_size=4):
                         i * H_patch:(i + 1) * H_patch,
                         j * W_patch:(j + 1) * W_patch]
             patches.append(patch)
-    patches = np.stack(patches, axis=0)  # (16, 5, H_patch, W_patch)
+    patches = np.stack(patches, axis=0)  # (n_patches, C, H_patch, W_patch)
     return patches
 
 
@@ -78,7 +82,8 @@ def percentile_normalization(img, p_low, p_high, eps=1e-8):
 
 
 def extract_cells_512_nodistort(img, masks, pad=20, min_area=0,
-                                boundary_margin=200, target=512):
+                                boundary_margin=200, target=512,
+                                dapi_channel=0):
     C, H, W = img.shape
     out = []
 
@@ -122,7 +127,9 @@ def extract_cells_512_nodistort(img, masks, pad=20, min_area=0,
         y_end, x_end = y_start + target, x_start + target
         img_final = img_resized[:, y_start:y_end, x_start:x_end]
         mask_final = mask_resized[y_start:y_end, x_start:x_end]
-        img_final[0] *= mask_final
+        # The nucleus channel is masked to this cell alone; `dapi_channel` says
+        # which one that is, since a run may declare DAPI anywhere.
+        img_final[dapi_channel] *= mask_final
         out.append(dict(label=lab, img=img_final, mask=mask_final,
                         bb_position=[y0, y1, x0, x1],
                         n_cells_in_region=n_cells_in_region))
@@ -165,7 +172,13 @@ def analyze_image(img,
                   dilation_radius=3,
                   percent=95,
                   eps=0.1):
-    assert img.shape[0] == 5, "Expected 5 channels"
+    # What matters is that every channel asked for exists -- not that there are
+    # exactly five. A run may declare three channels, or six, or none that this
+    # function scores (a DAPI-only run, where target_channels is empty and the
+    # loops below simply do nothing).
+    out_of_range = [c for c in target_channels if not -img.shape[0] <= c < img.shape[0]]
+    assert not out_of_range, (
+        f"channels {out_of_range} requested from a {img.shape[0]}-channel image")
 
     percentile = {}
     for c in target_channels:
@@ -217,7 +230,17 @@ def analyze_image(img,
     }
 
 
-def process_one_patch(img, basics, model, channel_names, plot=False):
+def process_one_patch(img, basics, model, channel_names, plot=False, layout=None):
+    """One patch end to end, the notebook's way. Not the deployed path -- see
+    neural_imgs.inference.patch_extraction, which pipelines this across patches.
+
+    ``layout`` is a neural_imgs.channels.ChannelLayout saying which channel is
+    DAPI and which are the markers to score; None means the historical
+    DAPI/OPC/RFP/B3Tub/BF order.
+    """
+    from neural_imgs.channels import ChannelLayout
+
+    layout = ChannelLayout.parse(layout).for_image(img.shape[0])
     img = correct_illumination(img, basics)
     p_low = 0.1
     p_high = 99.9
@@ -227,13 +250,13 @@ def process_one_patch(img, basics, model, channel_names, plot=False):
     cellprob_threshold = 0.6
     batch_size = 1
     masks, flows, styles = detect_cells_on_DAPI(
-        img[0], model, batch_size, flow_threshold, cellprob_threshold
+        img[layout.dapi], model, batch_size, flow_threshold, cellprob_threshold
     )
 
     if plot:
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        axes[0].imshow(img[0], cmap='gray')
+        axes[0].imshow(img[layout.dapi], cmap='gray')
         axes[0].set_title('DAPI channel')
         axes[0].axis('off')
         axes[1].imshow(masks, cmap='nipy_spectral', interpolation='nearest')
@@ -243,11 +266,12 @@ def process_one_patch(img, basics, model, channel_names, plot=False):
         plt.show()
 
     single_cells = extract_cells_512_nodistort(
-        img, masks, pad=100, min_area=100, boundary_margin=20, target=512
+        img, masks, pad=100, min_area=100, boundary_margin=20, target=512,
+        dapi_channel=layout.dapi,
     )
     percentile = 95
     border = 100
-    target_channels = [1, 2, 3]
+    target_channels = list(layout.target_channels)
     for idx in tqdm(range(len(single_cells)), desc='Processing single cells'):
         single_cells[idx]['img'] = zero_out_image_border(
             single_cells[idx]['img'],

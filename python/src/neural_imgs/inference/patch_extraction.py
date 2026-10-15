@@ -24,9 +24,16 @@ results are reassembled in patch order, so ``cells`` -- and therefore every
 **Memory.** The deployed path keeps no per-cell display crops at all. The RFP
 heuristic needs the normalised RFP plane, so it is scored *inside* the worker,
 per patch, from views onto the patch that is alive anyway; the views die with
-the patch. Retaining the five crops instead (what the notebook does, for its
-montages) costs ~1.3 MB per cell -- several GB on a crowded image, which is the
-difference between running on a laptop and not.
+the patch. Retaining every channel's crop instead (what the notebook does, for
+its montages) costs ~1.3 MB per cell -- several GB on a crowded image, which is
+the difference between running on a laptop and not.
+
+**Channels.** Nothing here hardcodes a channel index: the nucleus channel to
+detect on, the marker channels to score and the RFP plane the neighbour rule
+reads all come from the run's
+:class:`~neural_imgs.channels.ChannelLayout`, carried on
+:class:`CellExtractionConfig`. An acquisition missing a marker simply has no
+index for it, and that marker is not scored.
 """
 
 from __future__ import annotations
@@ -43,7 +50,8 @@ import numpy as np
 from scipy import ndimage as ndi
 from skimage.transform import resize as sk_resize
 
-from neural_imgs.inference.rfp import RFP_CHANNEL, RfpConfig, score_rfp_neighbour
+from neural_imgs.channels import DEFAULT_LAYOUT, ChannelLayout
+from neural_imgs.inference.rfp import RfpConfig, score_rfp_neighbour
 from neural_imgs.positivity import neighbour_mask_from_labels
 from neural_imgs.processing.processing import (
     analyze_image,
@@ -53,8 +61,12 @@ from neural_imgs.processing.processing import (
     zero_out_image_border,
 )
 
-#: Keys the notebook stores its normalised per-channel crops under, in channel order.
-DISPLAY_CROP_KEYS = ("dapi_crop", "opc_crop", "rfp_crop", "b3tub_crop", "bf_crop")
+#: Keys the notebook stores its normalised per-channel crops under, in channel
+#: order. A run with another channel layout gets its own keys from
+#: :meth:`~neural_imgs.channels.ChannelLayout.crop_key`, so a crop is always
+#: filed under the name of the channel it came from.
+DISPLAY_CROP_KEYS = tuple(
+    DEFAULT_LAYOUT.crop_key(i) for i in range(DEFAULT_LAYOUT.n_channels))
 
 
 @dataclass(frozen=True)
@@ -74,8 +86,14 @@ class CellExtractionConfig:
         Operating point of the RFP rules. ``analyze_image``'s ``eps`` comes from
         it, so the legacy gate cannot drift from the score it gates; when
         ``method == "neighbour"`` the neighbour score is computed here too.
+    layout:
+        Which channel is which. The single source of the channel indices used
+        here -- the nucleus channel to mask, the marker channels to score, the
+        RFP plane the neighbour rule reads -- so this object is the only thing
+        that has to change for another acquisition. A layout without a given
+        marker simply does not score it.
     keep_display_crops:
-        Retain the five normalised ``*_crop`` arrays per cell (~1.3 MB each).
+        Retain one normalised ``*_crop`` array per channel per cell (~1.3 MB each).
         Off by default: the per-case montages rebuild them on demand from the
         BaSiC fit, so nothing downstream of a deployed run reads them.
     """
@@ -90,6 +108,7 @@ class CellExtractionConfig:
     p_high: float = 99.9
     eps_norm: float = 1e-8
     rfp: RfpConfig = field(default_factory=RfpConfig)
+    layout: ChannelLayout = DEFAULT_LAYOUT
     keep_display_crops: bool = False
 
 
@@ -114,15 +133,26 @@ class FastCellExtractor:
     Free of shared mutable state by construction, so several :meth:`extract`
     calls can run concurrently on a thread pool. The only per-call object with
     state is the RFP scorer, which is constructed inside the call.
+
+    Channel names and the channels to score come from ``config.layout`` rather
+    than being passed separately: two sources for the same mapping is how a
+    run ends up scoring one channel under another's name.
     """
 
-    def __init__(
-        self, config: CellExtractionConfig, channel_names: list[str],
-        target_channels: list[int],
-    ) -> None:
+    def __init__(self, config: CellExtractionConfig) -> None:
         self.config = config
-        self.channel_names = channel_names
-        self.target_channels = target_channels
+
+    @property
+    def layout(self) -> ChannelLayout:
+        return self.config.layout
+
+    @property
+    def channel_names(self) -> tuple[str, ...]:
+        return self.config.layout.names
+
+    @property
+    def target_channels(self) -> tuple[int, ...]:
+        return self.config.layout.target_channels
 
     def _bounding_boxes(self, masks: np.ndarray):
         """``(label, y_min, y_max, x_min, x_max)`` per label, ascending.
@@ -179,12 +209,12 @@ class FastCellExtractor:
                                     x_start:x_start + cfg.target]
             mask_final = mask_resized[y_start:y_start + cfg.target,
                                       x_start:x_start + cfg.target]
-            img_final[0] *= mask_final
+            img_final[cfg.layout.dapi] *= mask_final
 
             # --- legacy RFP heuristic: exactly the original 512 pipeline ----------
             img_final = zero_out_image_border(img_final, border=cfg.border)
-            result = analyze_image(img_final, mask_final, self.channel_names,
-                                   self.target_channels, percent=cfg.percent,
+            result = analyze_image(img_final, mask_final, list(self.channel_names),
+                                   list(self.target_channels), percent=cfg.percent,
                                    eps=cfg.rfp.analyze_eps)
 
             # --- classifier input: RAW native crop + native DAPI mask -------------
@@ -208,12 +238,15 @@ class FastCellExtractor:
             # is the only consumer -- unless display crops were explicitly asked
             # for, in which case they must own their pixels.
             if cfg.keep_display_crops:
-                for idx, key in enumerate(DISPLAY_CROP_KEYS):
+                keys = [cfg.layout.crop_key(idx) for idx in range(C)]
+                for idx, key in enumerate(keys):
                     cell[key] = pre[idx, y0:y1, x0:x1].copy()
-                cell["native_channels"] = [cell[k] for k in DISPLAY_CROP_KEYS]
+                cell["native_channels"] = [cell[k] for k in keys]
             else:
                 channels: list[np.ndarray | None] = [None] * C
-                channels[RFP_CHANNEL] = pre[RFP_CHANNEL, y0:y1, x0:x1]
+                rfp = cfg.layout.index_of("RFP")
+                if rfp is not None:
+                    channels[rfp] = pre[rfp, y0:y1, x0:x1]
                 cell["native_channels"] = channels
             cells.append(cell)
 
@@ -227,11 +260,15 @@ class FastCellExtractor:
         outlive the patch: holding them until a whole-image scoring pass would
         cost gigabytes on a crowded image, and buys nothing -- the rule scores
         each cell from its own arrays alone.
+
+        A run with no RFP channel still passes through here, so the per-cell
+        bookkeeping below -- including dropping ``native_channels`` -- happens
+        exactly once either way; the scores it attaches are then NaN.
         """
         if not cells:
             return
         scores, positive = score_rfp_neighbour(
-            cells, self.config.rfp, tuple(self.channel_names),
+            cells, self.config.rfp, self.config.layout,
         )
         for cell, score, pos in zip(cells, scores, positive):
             cell["rfp_neighbour_score"] = float(score)
@@ -307,7 +344,7 @@ class ParallelPatchDetector:
 
                 t = time.perf_counter()
                 masks, _, _ = detect_cells_on_DAPI(
-                    pre[0], self.cellpose_model, 1,
+                    pre[self.extractor.layout.dapi], self.cellpose_model, 1,
                     self.flow_threshold, self.cellprob_threshold,
                 )
                 stage["cellpose"] += time.perf_counter() - t
