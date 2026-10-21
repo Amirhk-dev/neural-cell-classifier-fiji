@@ -25,3 +25,6 @@ venv/
 *.iml
 .DS_Store
 Thumbs.db
+
+# Sphinx build output -- the manual is generated, never committed.
+docs/sphinx/_build/

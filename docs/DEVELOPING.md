@@ -26,7 +26,11 @@
 │   └── manual-test/                     drives the model download over localhost
 └── docs/
     ├── DEVELOPING.md
-    └── PUBLISHING.md                    how to cut a release (browser route)
+    ├── PUBLISHING.md                    how to cut a release (browser route)
+    └── sphinx/                          the user manual + Python API reference
+        ├── conf.py
+        ├── usage/                       hand-written: dialog, channels, outputs...
+        └── api/                         autodoc pages over neural_imgs
 ```
 
 Two artefacts ship, and they ship separately:
@@ -39,6 +43,42 @@ Two artefacts ship, and they ship separately:
 The Python package is **not** a third artefact: `environment.yml` pip-installs
 `python/` straight from this repository, so a pipeline fix reaches existing
 installs on their next environment build without a new jar.
+
+## The manual
+
+`docs/sphinx/` is the long-form documentation: the dialog field by field, what
+`0` in a Channels field means, the saved-results key, the RFP evidence, and an
+autodoc API reference over `neural_imgs`. The README is deliberately short and
+links into it, so there is one place for each explanation rather than two that
+drift.
+
+```bash
+pip install -r docs/sphinx/requirements.txt
+make -C docs/sphinx html          # -> docs/sphinx/_build/html/index.html
+make -C docs/sphinx strict        # warnings as errors + nitpick, for CI
+```
+
+A docs build needs **neither the inference stack nor a GPU**: `conf.py` mocks
+torch, CellPose, BaSiCPy and the rest, so only Sphinx is installed. That is not
+convenience, it is the same invariant as below — `python/src/neural_imgs/` is a
+byte-identical copy, so a docs build must never become a reason to edit one of
+those files. Where a docstring renders badly, `conf.py` fixes the renderer:
+
+- napoleon is bypassed for attributes and module data, because it parses an
+  attribute docstring as `type: description` and these modules use `#:` prose
+  that contains colons;
+- `napoleon_use_param` is off, because several modules document related knobs on
+  one line (`pad / min_area / boundary_margin / target:`) and Sphinx reads a
+  multi-word `:param:` argument as `<type> <name>`;
+- `|crowding|` in `neighbour_contrast` means absolute value, so `rst_prolog`
+  defines that substitution rather than the module escaping it.
+
+Each has a comment in `conf.py` saying so. If `diff -r` against the private repo
+is ever clean *and* the manual renders, both invariants are intact.
+
+`conf.py` reads `BUILD_ID` out of `NeuralClassifyPlugin.java`, so the manual
+cannot claim to describe a version that was never shipped — one more reason to
+bump `BUILD_ID` and `<version>` together.
 
 ## How the two halves talk
 

@@ -1,0 +1,26 @@
+/* Narrow tweaks on top of the theme -- enough to make the field-reference and
+   channel-layout tables readable, and nothing else. */
+
+/* Those tables are mostly short cells plus one prose column; letting the prose
+   wrap instead of forcing a horizontal scrollbar is the whole point. */
+table.docutils {
+  width: 100%;
+  table-layout: auto;
+}
+table.docutils td,
+table.docutils th {
+  vertical-align: top;
+}
+
+/* Defaults and field names are quoted constantly in this manual; keeping
+   inline literals from wrapping mid-token stops "B3-Tub" and "0.1" breaking
+   across lines. */
+code.literal {
+  white-space: nowrap;
+}
+
+/* The ASCII dialog mock-up in dialog.rst is laid out by column, so it must not
+   be re-wrapped however narrow the window gets. */
+div.highlight pre {
+  overflow-x: auto;
+}

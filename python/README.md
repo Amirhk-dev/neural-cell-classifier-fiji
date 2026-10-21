@@ -30,6 +30,9 @@ result = BatchClassifier(models).run(BatchInput(
 print("\n".join(result.summary_lines()))
 ```
 
+API reference: [`docs/sphinx/api/`](../docs/sphinx/api/index.rst), generated
+from these modules' own docstrings.
+
 The import package is `neural_imgs` and its modules are byte-identical to the
 private research repository they come from — the preprocessing applied at
 inference has to be the preprocessing the shipped checkpoints were trained

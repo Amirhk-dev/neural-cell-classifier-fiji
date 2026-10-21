@@ -97,7 +97,7 @@ public class NeuralClassifyPlugin implements PlugIn {
 	 * running the new jar" are different claims. Without a visible stamp there
 	 * is no way to tell a bug from a stale class.
 	 */
-	static final String BUILD_ID = "1.1.1";
+	static final String BUILD_ID = "1.2.0";
 
 	private static final int DEFAULT_PATCH_GRID = 4;
 
@@ -109,10 +109,11 @@ public class NeuralClassifyPlugin implements PlugIn {
 		ROLE_RFP = "RFP", ROLE_B3TUB = "B3Tub", ROLE_BF = "BF";
 	private static final String[] CHANNEL_ROLES =
 		{ ROLE_DAPI, ROLE_OPC, ROLE_RFP, ROLE_B3TUB, ROLE_BF };
-	private static final String[] CHANNEL_CAPTIONS = {
-		"DAPI / nuclei channel:", "OPC channel:", "RFP channel:",
-		"B3-Tub channel:", "Brightfield channel:",
-	};
+	/** Dialog captions, one per role. Short because the five channel fields
+	 *  share one row -- the "Channels" heading already says these are channel
+	 *  numbers, so repeating "channel" five times only widened the dialog. */
+	private static final String[] CHANNEL_CAPTIONS =
+		{ "DAPI", "OPC", "RFP", "B3-Tub", "BF" };
 
 	/** Marker roles a cell is called positive in, i.e. the ones whose absence
 	 *  removes columns from the results table. A subset of CHANNEL_ROLES. */
@@ -130,6 +131,11 @@ public class NeuralClassifyPlugin implements PlugIn {
 	 *  be reported as "the image has only 5" minutes later. Well above any
 	 *  plausible widefield acquisition. */
 	private static final int MAX_CHANNEL = 32;
+
+	/** Width of a channel field, in characters. Two digits is every value
+	 *  {@link #MAX_CHANNEL} allows, and narrow fields are what let all five
+	 *  share one row. */
+	private static final int CHANNEL_FIELD_COLUMNS = 2;
 
 	/** Input modes, in dialog order. */
 	private static final String[] INPUT_MODES = { "Single image", "Folder of images" };
@@ -168,22 +174,24 @@ public class NeuralClassifyPlugin implements PlugIn {
 	private static final double CELLPROB_MIN = -3.0, CELLPROB_MAX = 2.0;
 	private static final double FLOW_MIN = 0.0, FLOW_MAX = 1.0;
 
-	/** Field hints, shown in small grey italics under the field they describe.
+	/** Field hints: one short grey italic line under the field they describe.
+	 *  Deliberately one line each -- anything that needs a paragraph belongs in
+	 *  Help, where it can be read without making every run's dialog taller.
 	 *  The single-image and folder hints are greyed out together with their
-	 *  field when the other input mode is selected (see setInputRowEnabled). */
-	private static final String HINT_IMAGE =
-		"Expects one Zeiss .czi image; say which channel is which in Channels below.";
+	 *  field when the other input mode is selected (see InputRow.setEnabled). */
+	private static final String HINT_IMAGE = "One Zeiss .czi file.";
 	private static final String HINT_FOLDER =
-		"Expects a folder containing .czi images; every .czi directly inside it is run.";
+		"Every .czi directly inside it; not recursive.";
+	/** One line for both directory rows: neither is ever greyed out, so they do
+	 *  not need separate handles, and two lines of grey italics to say two short
+	 *  things made the dialog taller than the things were worth. */
+	private static final String HINT_DIRS =
+		"Models download on first run; the output root gets one subfolder per image.";
+	/** Sits under the "Channels" heading rather than under a field, because it
+	 *  describes all five at once. */
 	private static final String HINT_CHANNELS =
-		"Channel numbers as they appear in the image, counting from 1. "
-		+ "0 = that channel is not in this image: the run still goes ahead and "
-		+ "reports the marker as not measured. DAPI is required -- nuclei are "
-		+ "detected on it. Channels above the highest number used are ignored.";
-	private static final String HINT_MODEL_DIR =
-		"Downloaded automatically on first run; change only to use your own checkpoints.";
-	private static final String HINT_OUT_DIR =
-		"One subfolder per image is created inside it, named after the image.";
+		"Channel number of each marker, counting from 1. "
+		+ "0 = not in my images; DAPI is required.";
 
 	/** Hint styling. The disabled colour is what marks a hint as "not this mode":
 	 *  MultiLineLabel paints its own text and ignores setEnabled, so the greying
@@ -195,200 +203,104 @@ public class NeuralClassifyPlugin implements PlugIn {
 	private static final Color HINT_COLOR = new Color(0x55, 0x55, 0x55);
 	private static final Color HINT_DISABLED_COLOR = new Color(0xAA, 0xAA, 0xAA);
 
-	/** Shown by the dialog's "?" button. ImageJ renders a help string that starts
-	 *  with {@code <html>} in its own window instead of opening a browser.
+	/** Where Help sends anyone who wants more than the dialog explains. The
+	 *  repository front page, not a Pages site, so the link cannot rot ahead of
+	 *  the docs being published; point it at the Pages URL once there is one. */
+	private static final String DOCS_URL =
+		"https://github.com/Amirhk-dev/neural-cell-classifier-fiji";
+	private static final String ISSUES_URL = DOCS_URL + "/issues";
+
+	/** Shown by the dialog's Help button. ImageJ renders a help string that
+	 *  starts with {@code <html>} in its own window instead of opening a
+	 *  browser, so the plugin stays self-contained offline.
 	 *
-	 *  Sections are separated by rules and each one names the dialog fields it
-	 *  explains, so the text can be read next to the dialog rather than in
-	 *  dialog order. */
+	 *  Kept to what the dialog itself cannot say: the one-time downloads, what
+	 *  0 means in Channels, and why there are two RFP gates. Anything longer --
+	 *  the saved-results key, the RFP evidence, the per-marker output rules --
+	 *  lives in the manual linked at the bottom, rather than in a window a user
+	 *  has to scroll past to reach the sentence they came for. */
 	private static final String DIALOG_HELP =
-		"<html><body style='font-family:sans-serif;width:500px'>"
-		+ "<h1 style='font-size:15pt;margin-bottom:2px'>Neural Image Classifier</h1>"
-		+ "<p style='color:#555;margin-top:0'>Single-cell OPC / Neuron (B3-Tub) / "
-		+ "Transduced (RFP) calls on Zeiss CZI images. Build " + BUILD_ID + ".</p>"
+		"<html><body style='font-family:sans-serif;width:460px'>"
+		+ "<h2 style='font-size:14pt;margin:0'>Neural Image Classifier</h2>"
+		+ "<p style='color:#555;margin:2px 0 12px 0;font-size:10pt'>"
+		+ "Single-cell OPC / Neuron (B3-Tub) / Transduced (RFP) calls on Zeiss "
+		+ "CZI images &nbsp;&middot;&nbsp; build " + BUILD_ID + "</p>"
+
+		+ "<p><b>One run:</b> the CZI is tiled <i>Patch grid</i> &times; <i>Patch "
+		+ "grid</i>, illumination-corrected (BaSiC), nuclei are detected on DAPI "
+		+ "(CellPose), and every cell is scored by the two ResNet-18 classifiers "
+		+ "and the RFP rule &mdash; for whichever markers your image declares a "
+		+ "channel. You get the <i>Neural Classifier Results</i> table, a CSV, an "
+		+ "UpSet plot, and optionally ROIs and example cells. The dialog reopens "
+		+ "pre-filled after each run; <b>Cancel</b> finishes.</p>"
+
+		+ "<p>Only the first group is required. Everything below it is tuning, "
+		+ "already set to the published defaults &mdash; except <b>Channels</b>, "
+		+ "which describes <i>your</i> images.</p>"
+
+		+ "<h3 style='margin-bottom:2px'>First run downloads ~1&ndash;2 GB, once</h3>"
+		+ "<p style='margin-top:0'>The Python environment (PyTorch, CellPose, "
+		+ "BaSiCPy) and the trained models (~90 MB) are fetched and cached; expect "
+		+ "several minutes and leave the progress window alone. Later runs start "
+		+ "in seconds. <i>Plugins &gt; Neural Image Processor &gt; Install / "
+		+ "Verify Models...</i> does the model half ahead of time, or just reports "
+		+ "what is already installed.</p>"
+
+		+ "<h3 style='margin-bottom:2px'>Channels: 0 means \"not in my images\"</h3>"
+		+ "<p style='margin-top:0'>One field per marker, holding its channel "
+		+ "number in your image counting from 1. Set a marker to <b>0</b> and the "
+		+ "run still goes ahead: that marker is reported as <b>not measured</b> "
+		+ "&mdash; no column, no UpSet set, no ratio &mdash; which is deliberately "
+		+ "different from <i>measured and negative</i>. So DAPI + RFP + B3-Tub and "
+		+ "no OPC is <code>1, 0, 2, 3, 0</code>, and it runs.</p>"
+		+ "<p><b>DAPI cannot be 0</b> &mdash; every cell in the run comes from the "
+		+ "nucleus detection on it. Any order is fine, gaps are fine, and channels "
+		+ "above the highest number you use need not be mentioned at all.</p>"
+
+		+ "<h3 style='margin-bottom:2px'>Defaults</h3>"
+		+ "<table cellpadding='3' cellspacing='0' style='font-size:10pt'>"
+		+ "<tr><td><b>Patch grid</b></td><td><code>4</code></td>"
+		+ "<td>tiles per side, so 16 tiles. A count, not a pixel size.</td></tr>"
+		+ "<tr><td><b>Cell probability</b></td><td><code>0.1</code></td>"
+		+ "<td>&minus;3.0&hellip;2.0. Lower &rarr; more nuclei detected.</td></tr>"
+		+ "<tr><td><b>Flow</b></td><td><code>0.2</code></td>"
+		+ "<td>0.0&hellip;1.0. Lower &rarr; fewer masks accepted.</td></tr>"
+		+ "<tr><td><b>RFP rule</b></td><td><code>neighbour</code></td>"
+		+ "<td>gate <code>16.5</code>, exclusion radius <code>60</code> px.</td></tr>"
+		+ "<tr><td><b>Images ahead</b></td><td><code>1</code></td>"
+		+ "<td>the memory knob &mdash; each waiting image holds its whole tile "
+		+ "array.</td></tr>"
+		+ "<tr><td><b>Threads</b></td><td><code>0</code></td>"
+		+ "<td>cell-extraction pool; 0 sizes it from this process's cores.</td></tr>"
+		+ "</table>"
+
+		+ "<h3 style='margin-bottom:2px'>RFP has no classifier</h3>"
+		+ "<p style='margin-top:0'>It is called from pixel intensity. "
+		+ "<b>neighbour</b> (production) compares the cell against its crop's "
+		+ "background with pixels near other nuclei dropped; <b>legacy</b> uses "
+		+ "the crop's 95th percentile. Both are scored for every cell and both "
+		+ "travel in the results table, so a saved table can be re-read under the "
+		+ "other rule without re-classifying.</p>"
+		+ "<p style='color:#a00'><b>The two gates are not interchangeable</b> "
+		+ "&mdash; different background estimators put the scores on different "
+		+ "scales, which is why each rule has its own field.</p>"
+
+		+ "<h3 style='margin-bottom:2px'>Saved results</h3>"
+		+ "<p style='margin-top:0'>With <i>Load saved results</i> ticked, an image "
+		+ "whose previous run matches on everything that could change the numbers "
+		+ "&mdash; the image, patch grid, channels, both thresholds, the RFP "
+		+ "settings and the model bundle &mdash; is re-read in seconds instead of "
+		+ "re-classified. Any mismatch re-runs it, and the Log names what "
+		+ "changed.</p>"
 
 		+ "<hr>"
-		+ "<h2>What one run does</h2>"
-		+ "<p>The CZI is read and tiled into <b>Patch grid</b> &times; <b>Patch "
-		+ "grid</b> patches, illumination-corrected (BaSiC), nuclei are detected "
-		+ "on DAPI with CellPose, and every detected cell is classified by the two "
-		+ "trained ResNet-18 models (OPC, B3-Tub) plus the RFP intensity rule -- "
-		+ "or by whichever of those three your image has a channel for, see "
-		+ "<b>Channels</b> below. "
-		+ "Results arrive as the <i>Neural Classifier Results</i> table, a CSV, an "
-		+ "UpSet plot, and optionally ROIs and per-case example cells.</p>"
-		+ "<p>The dialog reopens after each run with every field as you left it, so "
-		+ "the next image is one field-change away. <b>Cancel</b> finishes.</p>"
-		+ "<p>The dialog's top group -- input, model directory, output directory -- "
-		+ "is everything a run <b>requires</b>. Every group below it is tuning, and "
-		+ "its defaults are the ones the notebook uses. The one group worth "
-		+ "checking on a new dataset is <b>Channels</b>, which says which channel "
-		+ "of your images carries which marker.</p>"
-
-		+ "<hr>"
-		+ "<h2>First run: two one-time downloads</h2>"
-		+ "<p>The very first run fetches the <b>Python environment</b> (a few "
-		+ "hundred MB: PyTorch, CellPose, BaSiCPy) and the <b>trained models</b> "
-		+ "(about 90 MB) and caches both. Expect several minutes and leave the "
-		+ "progress window alone; every later run starts in seconds.</p>"
-		+ "<p>The models land in the <i>Model directory</i> shown above, so there "
-		+ "is nothing to copy by hand. Use <i>Plugins &gt; Neural Image Processor "
-		+ "&gt; Install / Verify Models...</i> to do that download ahead of time, "
-		+ "or to check what is installed. Point the field somewhere else only if "
-		+ "you have your own retrained checkpoints -- an existing complete "
-		+ "directory is never overwritten.</p>"
-
-		+ "<hr>"
-		+ "<h2>Input</h2>"
-		+ "<p><b>Single image</b> classifies the one <code>.czi</code> you pick; "
-		+ "the <i>Input folder</i> row is greyed out. <b>Folder of images</b> "
-		+ "classifies every <code>.czi</code> directly inside the folder (not "
-		+ "recursive, hidden files skipped, sorted by name); the <i>CZI image</i> "
-		+ "row is greyed out. The greyed field keeps its text, so switching mode "
-		+ "back does not mean retyping a path.</p>"
-		+ "<p>Each image gets its own subfolder of the output directory, named "
-		+ "after the image, holding its results table, quantification, figures and "
-		+ "saved results. One image failing does not abort a folder run -- the "
-		+ "failure is reported in the Log and the rest continue.</p>"
-
-		+ "<hr>"
-		+ "<h2>Channels -- which channel carries which marker</h2>"
-		+ "<p>Five fields, one per marker, each holding that marker's "
-		+ "<b>channel number in your image, counting from 1</b>. The defaults -- "
-		+ "DAPI&nbsp;1, OPC&nbsp;2, RFP&nbsp;3, B3-Tub&nbsp;4, Brightfield&nbsp;5 "
-		+ "-- are the acquisition the models were trained on, so an image in that "
-		+ "order needs nothing changed here.</p>"
-		+ "<h3>A channel your images do not have: set it to 0</h3>"
-		+ "<p><b>0 means \"not in this image\", and the run still goes ahead.</b> "
-		+ "Everything that does not need that channel is done exactly as before: "
-		+ "nuclei are detected, cells are extracted, and the remaining markers are "
-		+ "classified and counted. The missing marker is reported as <i>not "
-		+ "measured</i> -- it gets no column in the results table, no set in the "
-		+ "UpSet plot, and any ratio that needs it is left out rather than printed "
-		+ "as 0%. That distinction is the point: <i>\"there was no OPC channel\" "
-		+ "and \"no cell was OPC+\" are different findings.</i></p>"
-		+ "<p>So an image with DAPI, RFP and B3-Tub but no OPC is "
-		+ "<b>DAPI&nbsp;1, OPC&nbsp;0, RFP&nbsp;2, B3-Tub&nbsp;3, "
-		+ "Brightfield&nbsp;0</b>, and it runs.</p>"
-		+ "<h3>DAPI is the one that cannot be 0</h3>"
-		+ "<p>Nuclei are detected on DAPI with CellPose, and every single cell in "
-		+ "the run comes from that detection -- its mask, its crop, its bounding "
-		+ "box. Without it there is nothing to classify.</p>"
-		+ "<h3>Any order; extra channels ignored</h3>"
-		+ "<p>The numbers need not be in order and need not be contiguous: DAPI "
-		+ "can be channel 3. Channels above the highest number you use are read "
-		+ "and then ignored, so you only have to describe the ones you care "
-		+ "about. An image with <i>fewer</i> channels than you assign is a real "
-		+ "mismatch and is reported per image, naming both counts, before that "
-		+ "image's slow work starts.</p>"
-		+ "<p style='color:#555'>Changing any of these invalidates saved results "
-		+ "for that image -- different channels mean different pixels and a "
-		+ "different set of markers -- so the next run re-classifies it.</p>"
-		+ "<p style='color:#a00'><b>A marker whose channel you set to 0 is not "
-		+ "its classifier being switched off.</b> The channel is simply not "
-		+ "there to score. If a channel <i>is</i> present but your model "
-		+ "directory ships no checkpoint for it, that marker is also reported as "
-		+ "not measured -- the Log says which.</p>"
-
-		+ "<hr>"
-		+ "<h2>Tiling and nucleus detection</h2>"
-		+ "<h3>Patch grid (NxN)</h3>"
-		+ "<p>How many tiles the image is split into per side -- <b>4</b> means 16 "
-		+ "patches. A tile count, not a pixel size: a whole number, at least 1. "
-		+ "Tiling is what keeps one patch's pixels, its BaSiC correction and its "
-		+ "CellPose call inside memory; cells are numbered patch by patch.</p>"
-		+ "<h3>The two CellPose thresholds</h3>"
-		+ "<p>They decide which nuclei are detected on the DAPI channel, and "
-		+ "therefore which cells everything downstream classifies and counts.</p>"
-		+ "<h3>Cell probability threshold</h3>"
-		+ "<p>Does the pixel look like it belongs to a cell?<br>"
-		+ "<b>Low threshold value: more cells detected</b><br>"
-		+ "Values: [-3.0, -2.9, -2.8, &hellip;, 1.9, 2.0]<br>"
-		+ "<i>Any decimal in that range is accepted, not just these steps.</i></p>"
-		+ "<h3>Flow threshold</h3>"
-		+ "<p>Does the proposed mask have flows consistent enough with what "
-		+ "CellPose predicted?<br>"
-		+ "<b>Low threshold value: less masks accepted (very strict)</b><br>"
-		+ "Values: [0.0, 0.1, 0.2, &hellip;, 1.0]<br>"
-		+ "<i>Any decimal in that range is accepted, not just these steps.</i></p>"
-		+ "<p style='color:#555'>Changing either value invalidates saved results "
-		+ "for that image, so the next run re-classifies from scratch.</p>"
-
-		+ "<hr>"
-		+ "<h2>RFP positivity</h2>"
-		+ "<p>RFP has no trained classifier -- it is called from pixel intensity. "
-		+ "Two rules are available and both are scored for every cell; the one "
-		+ "selected here makes the call.</p>"
-		+ "<h3>neighbour (production)</h3>"
-		+ "<p>The cell's mean against the background of its crop <b>with pixels "
-		+ "near other nuclei dropped</b>, so one bright neighbour can no longer "
-		+ "set this cell's reference. Default gate <b>16.5</b>, exclusion radius "
-		+ "<b>60 px</b>. Matches the notebook.</p>"
-		+ "<h3>legacy</h3>"
-		+ "<p>The original rule: mean over the dilated nucleus minus the crop's "
-		+ "95th percentile. Default gate <b>5</b>. Kept for comparison.</p>"
-		+ "<p style='color:#a00'><b>The two gates are not interchangeable.</b> The "
-		+ "rules use different background estimators, so their scores are on "
-		+ "different scales -- each has its own field above.</p>"
-
-		+ "<hr>"
-		+ "<h2>Performance -- what runs in parallel</h2>"
-		+ "<p>Inside one image the patches are <b>pipelined, not serial</b>: "
-		+ "CellPose runs on one patch at a time (one GPU, one model copy, so a "
-		+ "second concurrent call would contend rather than add throughput) while "
-		+ "that patch's cell extraction and RFP scoring run on a CPU thread pool, "
-		+ "overlapping the next patch's CellPose call. <b>Extraction threads</b> "
-		+ "sizes that pool; 0 sizes it from this process's core allocation.</p>"
-		+ "<p>Across images in folder mode, reading the next CZI and fitting its "
-		+ "BaSiC illumination model overlap the current image's GPU work. "
-		+ "<b>Images prepared ahead</b> bounds how many may wait: each one holds "
-		+ "its whole patch array (~840 MB for a 16-patch OPC CZI), so this is the "
-		+ "run's memory knob. 1 is enough to keep the GPU lane fed.</p>"
-		+ "<p style='color:#555'>Cell ids are assembled back in patch order, so "
-		+ "the numbers are identical to a fully serial run.</p>"
-
-		+ "<hr>"
-		+ "<h2>Saved results</h2>"
-		+ "<p><b>Load saved results if available</b> re-reads an image's previous "
-		+ "results instead of classifying it again, and only when the image, patch "
-		+ "grid, channel assignment, model directory, CellPose thresholds and RFP "
-		+ "settings all match what was saved -- so a re-run over a mostly-done "
-		+ "folder costs seconds. A cache hit never even reads the CZI.</p>"
-
-		+ "<hr>"
-		+ "<h2>Contact</h2>"
-		+ "<p><b>Report a problem:</b> "
-		+ "<a href='https://github.com/Amirhk-dev/neural-cell-classifier-fiji/issues'>"
-		+ "github.com/Amirhk-dev/neural-cell-classifier-fiji/issues</a><br>"
-		+ "Maintainer: Amirhossein Kardoost &mdash; "
-		+ "<a href='mailto:kardoostamirhossein@gmail.com'>"
-		+ "kardoostamirhossein@gmail.com</a></p>"
-		+ "<p>Please include the build id above when reporting a problem, plus the "
-		+ "Fiji Log contents of the failing run.</p>"
-
-		+ "<hr>"
-		+ "<h2>License</h2>"
-		+ "<p><b>MIT License</b> &mdash; Copyright &copy; 2025 Amirhossein "
-		+ "Kardoost.</p>"
-		+ "<p style='color:#555'>Permission is hereby granted, free of charge, to "
-		+ "any person obtaining a copy of this software and associated "
-		+ "documentation files (the \"Software\"), to deal in the Software without "
-		+ "restriction, including without limitation the rights to use, copy, "
-		+ "modify, merge, publish, distribute, sublicense, and/or sell copies of "
-		+ "the Software, and to permit persons to whom the Software is furnished to "
-		+ "do so, subject to the following conditions:</p>"
-		+ "<p style='color:#555'>The above copyright notice and this permission "
-		+ "notice shall be included in all copies or substantial portions of the "
-		+ "Software.</p>"
-		+ "<p style='color:#555'>THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT "
-		+ "WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO "
-		+ "THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND "
-		+ "NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE "
-		+ "LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION "
-		+ "OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION "
-		+ "WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</p>"
-		+ "<p style='color:#555'>CellPose, BaSiC, PyTorch and Fiji/ImageJ are "
-		+ "used under their own licenses.</p>"
+		+ "<p style='font-size:10pt'><b>Manual:</b> "
+		+ "<a href='" + DOCS_URL + "'>" + DOCS_URL + "</a><br>"
+		+ "<b>Report a problem:</b> <a href='" + ISSUES_URL + "'>" + ISSUES_URL
+		+ "</a> &mdash; please quote build " + BUILD_ID + " and the Fiji Log of "
+		+ "the failing run.<br>"
+		+ "<b>Licence:</b> MIT &copy; 2025 Amirhossein Kardoost. CellPose, BaSiC, "
+		+ "PyTorch and Fiji/ImageJ are used under their own licences.</p>"
 		+ "</body></html>";
 
 	/**
@@ -622,7 +534,7 @@ public class NeuralClassifyPlugin implements PlugIn {
 		// can be started by filling the top of the dialog and leaving the rest
 		// alone. Each group below the required block is a tuning section whose
 		// defaults match the notebook.
-		addSection(gd, "Required -- what to classify, with which models, where it goes");
+		addSection(gd, "Input and output");
 		gd.addChoice("Input:", INPUT_MODES,
 			INPUT_MODES[previous != null && previous.folderMode ? MODE_FOLDER : MODE_SINGLE]);
 		// Each input row's three widgets are picked up as it is added -- the
@@ -638,59 +550,82 @@ public class NeuralClassifyPlugin implements PlugIn {
 			lastStringField(gd), gd.getLabel(), addHint(gd, HINT_FOLDER));
 		gd.addDirectoryField("Model directory:",
 			previous == null ? DEFAULT_MODEL_DIR : previous.modelDir);
-		addHint(gd, HINT_MODEL_DIR);
 		gd.addDirectoryField("Output directory:",
 			previous == null ? System.getProperty("user.home") : previous.outDir);
-		addHint(gd, HINT_OUT_DIR);
+		addHint(gd, HINT_DIRS);
 
 		// Immediately after the required block, because it is the one thing a
 		// new dataset is most likely to need changed -- and getting it wrong
 		// means scoring the wrong pixels rather than failing, so it should not
 		// be buried among the tuning sections.
-		addSection(gd, "Channels -- which channel carries which marker");
-		for (int i = 0; i < CHANNEL_ROLES.length; i++) {
-			gd.addNumericField(CHANNEL_CAPTIONS[i],
-				previous == null ? DEFAULT_CHANNELS[i] : previous.channels[i], 0);
-		}
+		addSection(gd, "Channels");
+		// Above the fields, not below: it explains all five at once, and a
+		// five-field row reads as a single question with one caption over it.
 		addHint(gd, HINT_CHANNELS);
+		for (int i = 0; i < CHANNEL_ROLES.length; i++) {
+			// All five on one row. Each is a one- or two-digit channel number,
+			// so a row apiece spent five rows of dialog height on ten
+			// characters of input -- and side by side they also read as the one
+			// thing they are: a layout.
+			if (i > 0) gd.addToSameRow();
+			gd.addNumericField(CHANNEL_CAPTIONS[i],
+				previous == null ? DEFAULT_CHANNELS[i] : previous.channels[i],
+				0, CHANNEL_FIELD_COLUMNS, "");
+		}
 
-		addSection(gd, "Tiling and nucleus detection");
+		addSection(gd, "Detection");
 		// Patch grid is a tile count -> 0 decimals; the two thresholds are
 		// genuinely continuous, so they get decimal places. The digit count only
 		// formats the default shown -- ImageJ parses whatever is typed, at full
 		// precision, either way, so validate() is what actually enforces
 		// "whole number" and the allowed ranges.
 		gd.addNumericField("Patch grid (NxN):",
-			previous == null ? DEFAULT_PATCH_GRID : previous.patchGrid, 0);
-		gd.addNumericField("Cell probability threshold:",
-			previous == null ? DEFAULT_CELLPROB_THRESHOLD : previous.cellprobThreshold, 2);
-		gd.addNumericField("Flow threshold:",
-			previous == null ? DEFAULT_FLOW_THRESHOLD : previous.flowThreshold, 2);
+			previous == null ? DEFAULT_PATCH_GRID : previous.patchGrid, 0, 3, "");
+		gd.addToSameRow();
+		gd.addNumericField("Cell probability:",
+			previous == null ? DEFAULT_CELLPROB_THRESHOLD : previous.cellprobThreshold,
+			2, 5, "");
+		gd.addToSameRow();
+		gd.addNumericField("Flow:",
+			previous == null ? DEFAULT_FLOW_THRESHOLD : previous.flowThreshold, 2, 5, "");
 
-		addSection(gd, "RFP positivity (no classifier -- an intensity rule)");
-		gd.addChoice("RFP rule:", RFP_METHODS,
+		addSection(gd, "RFP positivity (an intensity rule, not a classifier)");
+		gd.addChoice("Rule:", RFP_METHODS,
 			previous == null ? RFP_METHODS[0] : previous.rfpMethod);
-		gd.addNumericField("RFP gate, neighbour rule:",
-			previous == null ? DEFAULT_RFP_NEIGHBOUR_THRESHOLD : previous.rfpNeighbourThreshold, 2);
-		gd.addNumericField("RFP gate, legacy rule:",
-			previous == null ? DEFAULT_RFP_LEGACY_THRESHOLD : previous.rfpLegacyThreshold, 2);
-		gd.addNumericField("Neighbour exclusion radius (px):",
-			previous == null ? DEFAULT_RFP_EXCLUDE_RADIUS : previous.rfpExcludeRadius, 0);
+		gd.addToSameRow();
+		gd.addNumericField("Exclusion radius:",
+			previous == null ? DEFAULT_RFP_EXCLUDE_RADIUS : previous.rfpExcludeRadius,
+			0, 4, "px");
+		// One field per rule, on one row: the two gates are NOT on the same
+		// scale, so seeing them together is the point -- but they are still two
+		// numbers and do not need two rows.
+		gd.addNumericField("Gate, neighbour:",
+			previous == null ? DEFAULT_RFP_NEIGHBOUR_THRESHOLD : previous.rfpNeighbourThreshold,
+			2, 5, "");
+		gd.addToSameRow();
+		gd.addNumericField("Gate, legacy:",
+			previous == null ? DEFAULT_RFP_LEGACY_THRESHOLD : previous.rfpLegacyThreshold,
+			2, 5, "");
 
 		addSection(gd, "Performance");
-		gd.addNumericField("Images prepared ahead (memory):",
-			previous == null ? DEFAULT_PREFETCH : previous.prefetch, 0);
-		gd.addNumericField("Extraction threads (0 = auto):",
-			previous == null ? DEFAULT_WORKERS : previous.workers, 0);
+		gd.addNumericField("Images prepared ahead:",
+			previous == null ? DEFAULT_PREFETCH : previous.prefetch, 0, 3, "");
+		gd.addToSameRow();
+		gd.addNumericField("Extraction threads:",
+			previous == null ? DEFAULT_WORKERS : previous.workers, 0, 3, "0 = auto");
 
 		addSection(gd, "Outputs");
-		gd.addCheckbox("Generate UpSet plot (OPC / Neuron / Transduced)",
-			previous == null || previous.generateUpset);
-		gd.addCheckbox("Show one example cell per UpSet case (all channels + probabilities)",
+		// Two by two. Four full-width checkboxes carrying a parenthesised
+		// explanation each were the tallest and widest block in the dialog, for
+		// four on/off switches; what the parentheses said is in Help.
+		gd.addCheckbox("UpSet plot", previous == null || previous.generateUpset);
+		gd.addToSameRow();
+		gd.addCheckbox("Example cell per UpSet case",
 			previous != null && previous.showCaseMontage);
-		gd.addCheckbox("Add cell ROIs to the ROI Manager (opens it)",
+		gd.addCheckbox("Cell ROIs in the ROI Manager",
 			previous != null && previous.addRois);
-		gd.addCheckbox("Load saved results if available (skip re-classifying)",
+		gd.addToSameRow();
+		gd.addCheckbox("Load saved results if available",
 			previous == null || previous.reuseCache);
 		// A "<html>..." help text is shown by ImageJ in its own window rather
 		// than handed to a browser, so the plugin stays self-contained offline.
@@ -704,7 +639,9 @@ public class NeuralClassifyPlugin implements PlugIn {
 		// Read in the exact order the fields were added -- GenericDialog's
 		// getNext* calls are positional (one counter per field *type*), so moving
 		// or inserting a field above must be mirrored here or every later field
-		// of that type silently shifts by one.
+		// of that type silently shifts by one. addToSameRow() only changes where
+		// a field is painted, never that order, so the fields sharing a row are
+		// still read one at a time, left to right.
 		final boolean folderMode = gd.getNextChoiceIndex() == MODE_FOLDER;
 		final String imagePath = gd.getNextString();
 		final String inputDir = gd.getNextString();
@@ -723,9 +660,11 @@ public class NeuralClassifyPlugin implements PlugIn {
 		final double cellprobThreshold = gd.getNextNumber();
 		final double flowThreshold = gd.getNextNumber();
 		final String rfpMethod = gd.getNextChoice();
+		// Exclusion radius before the two gates, because that is the order the
+		// RFP rows add them: the radius shares a row with the rule choice.
+		final double rfpExcludeRadiusEntry = gd.getNextNumber();
 		final double rfpNeighbourThreshold = gd.getNextNumber();
 		final double rfpLegacyThreshold = gd.getNextNumber();
-		final double rfpExcludeRadiusEntry = gd.getNextNumber();
 		final double prefetchEntry = gd.getNextNumber();
 		final double workersEntry = gd.getNextNumber();
 		final boolean generateUpset = gd.getNextBoolean();
@@ -800,9 +739,13 @@ public class NeuralClassifyPlugin implements PlugIn {
 	}
 
 	/** Adds a bold group heading, with space above it to separate it from the
-	 *  group before. */
+	 *  group before.
+	 *
+	 *  The gap is what makes the groups legible now that most of them are one
+	 *  or two rows -- without it a heading would sit as close to the group above
+	 *  it as to its own. */
 	private static void addSection(final GenericDialog gd, final String title) {
-		gd.setInsets(12, 0, 2);   // applies to the next component only
+		gd.setInsets(10, 0, 2);   // applies to the next component only
 		gd.addMessage(title, SECTION_FONT);
 	}
 
@@ -945,8 +888,8 @@ public class NeuralClassifyPlugin implements PlugIn {
 		for (int i = 0; i < CHANNEL_ROLES.length; i++) {
 			final int channel = request.channels[i];
 			if (channel < CHANNEL_ABSENT || channel > MAX_CHANNEL) {
-				return CHANNEL_CAPTIONS[i] + "\n\nMust be a whole channel number "
-					+ "between 1 and " + MAX_CHANNEL
+				return "Channels: " + CHANNEL_CAPTIONS[i]
+					+ "\n\nMust be a whole channel number between 1 and " + MAX_CHANNEL
 					+ (ROLE_DAPI.equals(CHANNEL_ROLES[i]) ? "." : ", or 0 if the image "
 						+ "has no " + CHANNEL_ROLES[i] + " channel.");
 			}
@@ -1371,7 +1314,8 @@ public class NeuralClassifyPlugin implements PlugIn {
 			: ((Number) lastCells.get(0).get("cell_id")).intValue();
 
 		final GenericDialog gd = new GenericDialog("Show Cell");
-		gd.addMessage("Tip: select a single ROI in the ROI Manager first to pre-fill it.");
+		gd.addMessage("Select one ROI in the ROI Manager to pre-fill the id.",
+			HINT_FONT, HINT_COLOR);
 		if (imageNames.size() > 1) {
 			gd.addChoice("Image:", imageNames.toArray(new String[0]), imageName);
 		}
@@ -1564,14 +1508,10 @@ public class NeuralClassifyPlugin implements PlugIn {
 	 */
 	private void installModelsDialog() throws IOException {
 		final GenericDialog gd = new GenericDialog("Install / Verify Models");
-		gd.addMessage("Neural Image Classifier " + BUILD_ID + " -- model bundle "
-			+ ModelBootstrap.BUNDLE_VERSION, SECTION_FONT);
+		gd.addMessage("Model bundle " + ModelBootstrap.BUNDLE_VERSION, SECTION_FONT);
 		gd.addDirectoryField("Model directory:", DEFAULT_MODEL_DIR);
-		addHint(gd, "Status is checked when you press OK. An existing, complete "
-			+ "directory is left untouched.");
-		gd.addMessage("OK downloads the OPC + B3-Tub checkpoints and thresholds.json "
-			+ "(about 90 MB) into that directory,\nunless they are already there. "
-			+ "Needs internet the first time only.", HINT_FONT, HINT_COLOR);
+		addHint(gd, "OK fetches the checkpoints (~90 MB) unless they are already "
+			+ "there; a complete directory is left untouched.");
 		gd.showDialog();
 		if (gd.wasCanceled()) return;
 
